@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <fcntl.h>
 #include <linux/fuse.h>
 #include <stdbool.h>
@@ -33,7 +34,7 @@ void cleanup(void) {
 void signal_handler(int sig) {
   (void) sig;
 
-  exit(1);
+  exit(EXIT_FAILURE);
 }
 
 int main(void) {
@@ -47,7 +48,7 @@ int main(void) {
   fuse_fd = open(FUSE_FILE, O_RDWR);
   if (fuse_fd == -1) {
     perror("open '" FUSE_FILE "'");
-    exit(1);
+    exit(EXIT_FAILURE);
   }
 
 
@@ -56,7 +57,7 @@ int main(void) {
   mounted = true;
   if (mount("fuse", DEFAULT_MOUNT_POINT, "fuse", 0, options) == -1) {
     perror("mount");
-    exit(1);
+    exit(EXIT_FAILURE);
   }
 
   unsigned long buf_size = (MAX_PAGES + 1) * PAGE_SIZE;
@@ -68,7 +69,7 @@ int main(void) {
     count = read(fuse_fd, buf, buf_size);
     if (count == -1) {
       perror("read");
-      exit(1);
+      exit(EXIT_FAILURE);
     }
 
     struct fuse_in_header in_header = *(struct fuse_in_header*) buf;
@@ -80,7 +81,7 @@ int main(void) {
       printf("[INFO] kernel's FUSE protocol version is %u.%u (supported is %u.%u)\n", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
       if (init_in.major < PROTOCOL_VERSION_MAJOR) {
         fprintf(stderr, "error: kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
-        exit(1);
+        exit(EXIT_FAILURE);
       } else if (init_in.major > PROTOCOL_VERSION_MAJOR) {
         struct fuse_out_header out_header = (struct fuse_out_header) {
           .len = sizeof(struct fuse_out_header) + sizeof(uint32_t),
@@ -95,7 +96,7 @@ int main(void) {
 
         if (writev(fuse_fd, iov, 2) == -1) {
           perror("writev");
-          exit(1);
+          exit(EXIT_FAILURE);
         }
       } else {
         struct fuse_out_header out_header = (struct fuse_out_header) {
@@ -123,7 +124,7 @@ int main(void) {
 
         if (writev(fuse_fd, iov, 2) == -1) {
           perror("writev");
-          exit(1);
+          exit(EXIT_FAILURE);
         }
 
         initialized = true;
@@ -140,7 +141,7 @@ refuse_req:
     ;
     struct fuse_out_header out_header = (struct fuse_out_header) {
       .len = sizeof(struct fuse_out_header),
-      .error = -1,
+      .error = -EUNATCH,
       .unique = in_header.unique
     };
 
@@ -150,10 +151,10 @@ refuse_req:
 
     if (writev(fuse_fd, iov, 1) == -1) {
       perror("writev");
-      exit(1);
+      exit(EXIT_FAILURE);
     }
   }
 
-  return 0;
+  return EXIT_SUCCESS;
 }
 
