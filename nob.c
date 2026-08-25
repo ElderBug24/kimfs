@@ -9,9 +9,9 @@ int main(int argc, char** argv) {
 
   Nob_Cmd cmd = {0};
 
-  nob_cmd_append(&cmd, "gcc", "-x", "c", "-Wall", "-Wextra", "-Wconversion", "-pedantic", "-ggdb", "kim_fuse.c", "-o", "build/kim_fuse");
+  nob_cmd_append(&cmd, "gcc", "-x", "c", "-Wall", "-Wextra", "-Wconversion", "-pedantic", "-ggdb", "fuse.c", "-o", "build/fuse");
   if (!nob_cmd_run(&cmd)) return 1;
-  nob_cmd_append(&cmd, "build/kim_fuse");
+  nob_cmd_append(&cmd, "build/fuse");
   if (!nob_cmd_run(&cmd)) return 1;
 
   return 0;
