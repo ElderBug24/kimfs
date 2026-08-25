@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <linux/fuse.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
@@ -36,7 +37,6 @@ void signal_handler(int sig) {
 }
 
 int main(void) {
-  int ret = 0;
   long PAGE_SIZE = sysconf(_SC_PAGESIZE);
 
   atexit(cleanup);
@@ -50,8 +50,8 @@ int main(void) {
     exit(1);
   }
 
-  char options[64];
-  snprintf(options, sizeof(options), "fd=%d,rootmode=40000,user_id=%u,group_id=%u", fuse_fd, getuid(), getgid());
+  char options[256];
+  snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%u,group_id=%u,default_permissions,allow_other,subtype=kim", fuse_fd, getuid(), getgid()); // TODO: fsname=NAME for the name of the backing storage file
   mounted = true;
   if (mount("fuse", DEFAULT_MOUNT_POINT, "fuse", 0, options) == -1) {
     perror("mount");
@@ -65,50 +65,103 @@ int main(void) {
   while (running) {
     count = read(fuse_fd, buf, buf_size);
     if (count == -1) {
-      ret = 1;
       perror("read");
-      running = false;
-      break;
+      exit(1);
     }
 
     struct fuse_in_header in_header = *(struct fuse_in_header*) buf;
     void* payload = &buf[sizeof(struct fuse_in_header)];
 
+    printf("[INFO] received op %u from the kernel\n", in_header.opcode);
     switch (in_header.opcode) {
       case FUSE_INIT:
         ;
         struct fuse_init_in init_in = *(struct fuse_init_in*) payload;
+        printf("[INFO] kernel's FUSE protocol version is %u.%u (supported is %u.%u)\n", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
         struct fuse_out_header out_header = (struct fuse_out_header) {
           .len = sizeof(struct fuse_out_header) + sizeof(struct fuse_init_out),
           .error = 0,
           .unique = in_header.unique
         };
-        struct fuse_init_out init_out = (struct fuse_init_out) {
-          .major = PROTOCOL_VERSION_MAJOR,
-          .minor = PROTOCOL_VERSION_MINOR,
-          .max_readahead = init_in.max_readahead,
-          .flags = 0,
-          .max_background = 1,
-          .congestion_threshold = 1,
-          .max_write = MAX_PAGES * PAGE_SIZE,
-          .time_gran = 1000000000,
-          .max_pages = MAX_PAGES,
-          .map_alignment = 0,
-          .flags2 = 0,
-        };
-        struct iovec iov[] = {
-          { &out_header, sizeof(struct fuse_out_header) },
-          { &init_out, sizeof(struct fuse_init_out) }
-        };
-
-        if (writev(fuse_fd, iov, 2) == -1) {
-          perror("writev");
+        if (init_in.major < PROTOCOL_VERSION_MAJOR || (init_in.major == PROTOCOL_VERSION_MAJOR && init_in.minor < PROTOCOL_VERSION_MINOR)) {
+          fprintf(stderr, "error: kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
           exit(1);
+        } else if (init_in.major > PROTOCOL_VERSION_MAJOR) {
+          uint32_t major = PROTOCOL_VERSION_MAJOR;
+          struct iovec iov[] = {
+            { &out_header, sizeof(struct fuse_out_header) },
+            { &major,      sizeof(uint32_t)               }
+          };
+
+          if (writev(fuse_fd, iov, 2) == -1) {
+            perror("writev");
+            exit(1);
+          }
+
+          in_header.opcode = ~FUSE_INIT;
+          while (in_header.opcode != FUSE_INIT) {
+            count = read(fuse_fd, buf, buf_size);
+            if (count == -1) {
+              perror("read");
+              exit(1);
+            }
+
+            in_header = *(struct fuse_in_header*) buf;
+          }
+          init_in = *(struct fuse_init_in*) &buf[sizeof(struct fuse_in_header)];
+
+          if (init_in.minor < PROTOCOL_VERSION_MINOR) {
+            fprintf(stderr, "error: kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
+            exit(1);
+          }
+
+          struct fuse_init_out init_out = (struct fuse_init_out) {
+            .major = PROTOCOL_VERSION_MAJOR,
+            .minor = PROTOCOL_VERSION_MINOR,
+            .max_readahead = init_in.max_readahead,
+            .flags = 0,
+            .max_background = 1,
+            .congestion_threshold = 1,
+            .max_write = MAX_PAGES * PAGE_SIZE,
+            .time_gran = 1000000000, // TODO: gran is not set for kim fs
+            .max_pages = MAX_PAGES,
+            .map_alignment = 0,
+            .flags2 = 0,
+          };
+          iov[1] = (struct iovec) { &init_out, sizeof(struct fuse_init_out) };
+
+          if (writev(fuse_fd, iov, 2) == -1) {
+            perror("writev");
+            exit(1);
+          }
+        } else {
+          struct fuse_init_out init_out = (struct fuse_init_out) {
+            .major = PROTOCOL_VERSION_MAJOR,
+            .minor = PROTOCOL_VERSION_MINOR,
+            .max_readahead = init_in.max_readahead,
+            .flags = 0,
+            .max_background = 1,
+            .congestion_threshold = 1,
+            .max_write = MAX_PAGES * PAGE_SIZE,
+            .time_gran = 1000000000, // TODO: gran is not set for kim fs
+            .max_pages = MAX_PAGES,
+            .map_alignment = 0,
+            .flags2 = 0,
+          };
+          struct iovec iov[] = {
+            { &out_header, sizeof(struct fuse_out_header) },
+            { &init_out,   sizeof(struct fuse_init_out)   }
+          };
+
+          if (writev(fuse_fd, iov, 2) == -1) {
+            perror("writev");
+            exit(1);
+          }
         }
         break;
     }
   }
 
-  return ret;
+  return 0;
 }
 
