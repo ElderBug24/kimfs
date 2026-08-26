@@ -13,7 +13,9 @@
 #include "common.h"
 
 
-#define FUSE_FILE "/dev/fuse"
+#define FILEPATH_ROOT "/"
+#define FILEPATH_NULL "/dev/null"
+#define FILEPATH_FUSE "/dev/fuse"
 #define DEFAULT_MOUNT_POINT "/mnt/kim"
 #define MAX_PAGES 64u
 
@@ -22,10 +24,10 @@
 
 int fuse_fd = -1;
 enum {
-  LOG_QUIET = 0,
-  LOG_NORMAL = 1,
+  LOG_QUIET   = 0,
+  LOG_NORMAL  = 1,
   LOG_VERBOSE = 2
-} log_level;
+} log_level = LOG_NORMAL;
 
 void cleanup(void) {
   if (fuse_fd != -1)
@@ -53,51 +55,71 @@ int main(void) {
   signal(SIGTERM, signal_handler);
   signal(SIGHUP,  signal_handler);
 
+  // TODO: parse command line arguments
   bool daemonize = true;
   log_level = LOG_VERBOSE;
 
   // TODO: initialize fs from file
   // lock backing storage file to prevent access
 
-  fuse_fd = open(FUSE_FILE, O_RDWR);
+  fuse_fd = open(FILEPATH_FUSE, O_RDWR);
   if (fuse_fd == -1) {
-    if (log_level >= LOG_NORMAL) perror("open " FUSE_FILE);
+    if (log_level >= LOG_NORMAL) perror("open " FILEPATH_FUSE);
     exit(EXIT_FAILURE);
   }
 
-  char options[256];
-  snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%u,group_id=%u,default_permissions,allow_other,subtype=kim", fuse_fd, getuid(), getgid()); // TODO: fsname=NAME for the name of the backing storage file
-  if (mount("fuse", DEFAULT_MOUNT_POINT, "fuse", 0, options) == -1) {
+  char options[128];
+  snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%u,group_id=%u,default_permissions,allow_other", fuse_fd, getuid(), getgid());
+  if (mount("NAME", DEFAULT_MOUNT_POINT, "fuse.kim", 0, options) == -1) { // TODO: replace NAME with the name of the backing storage file
     if (log_level >= LOG_NORMAL) perror("mount");
     exit(EXIT_FAILURE);
   }
 
-  if (daemonize) {
+  if (daemonize) { // TODO: log to a temp file
     pid_t pid = fork();
     if (pid < 0) {
       if (log_level >= LOG_NORMAL) perror("fork");
       exit(EXIT_FAILURE);
     }
     if (pid > 0) {
-      if (log_level >= LOG_VERBOSE) printf("[INFO] daemonized successfully. Daemon PID: %d\n", pid);
       exit(EXIT_SUCCESS);
     }
 
     if (setsid() == -1) {
+      if (log_level >= LOG_NORMAL) perror("setsid");
       exit(EXIT_FAILURE);
     }
 
-    if (chdir("/") == -1) {
+    pid = fork();
+    if (pid < 0) {
+      if (log_level >= LOG_NORMAL) perror("fork");
+      exit(EXIT_FAILURE);
+    }
+    if (pid > 0) {
+      if (log_level >= LOG_VERBOSE) printf("daemonized successfully. daemon PID: %jd\n", (intmax_t) pid);
+      exit(EXIT_SUCCESS);
+    }
+
+    if (chdir(FILEPATH_ROOT) == -1) {
+      if (log_level >= LOG_NORMAL) perror("chdir " FILEPATH_ROOT);
       exit(EXIT_FAILURE);
     }
 
-    int null_fd = open("/dev/null", O_RDWR);
-    if (null_fd != -1) {
-      dup2(null_fd, STDIN_FILENO);
-      dup2(null_fd, STDOUT_FILENO);
-      dup2(null_fd, STDERR_FILENO);
-      if (null_fd > 2) {
-        close(null_fd);
+    int null_fd = open(FILEPATH_NULL, O_RDWR);
+    if (null_fd == -1) {
+      if (log_level >= LOG_NORMAL) perror("open " FILEPATH_NULL);
+      exit(EXIT_FAILURE);
+    }
+    if    (dup2(null_fd, STDIN_FILENO)  == -1
+        || dup2(null_fd, STDOUT_FILENO) == -1
+        || dup2(null_fd, STDERR_FILENO) == -1) {
+      if (log_level >= LOG_NORMAL) perror("dup2");
+      exit(EXIT_FAILURE);
+    }
+    if (null_fd > 2) {
+      if (close(null_fd) == -1) {
+        if (log_level >= LOG_NORMAL) perror("close");
+        exit(EXIT_FAILURE);
       }
     }
   }
@@ -105,7 +127,7 @@ int main(void) {
   unsigned long buf_size = (MAX_PAGES + 1) * (unsigned long) PAGE_SIZE;
   char buf[buf_size];
   long count;
-  bool running = true;
+  bool running     = true;
   bool initialized = false;
   while (running) {
     count = read(fuse_fd, buf, buf_size);
@@ -117,10 +139,10 @@ int main(void) {
     struct fuse_in_header in_header = *(struct fuse_in_header*) buf;
     void* payload = &buf[sizeof(struct fuse_in_header)];
 
-    if (log_level >= LOG_VERBOSE) printf("[INFO] received %s (%u) from the kernel\n", fuse_opcode_enum_str[in_header.opcode], in_header.opcode);
+    if (log_level >= LOG_VERBOSE) printf("received %s (%u) from the kernel\n", fuse_opcode_enum_str[in_header.opcode], in_header.opcode);
     if (in_header.opcode == FUSE_INIT) {
       struct fuse_init_in init_in = *(struct fuse_init_in*) payload;
-      if (log_level >= LOG_VERBOSE) printf("[INFO] kernel's FUSE protocol version is %u.%u (supported is %u.%u)\n", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
+      if (log_level >= LOG_VERBOSE) printf("kernel's FUSE protocol version is %u.%u (supported is %u.%u)\n", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
       if (init_in.major < PROTOCOL_VERSION_MAJOR) {
         if (log_level >= LOG_NORMAL) fprintf(stderr, "error: kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
         exit(EXIT_FAILURE);
@@ -202,7 +224,7 @@ int main(void) {
           };
 
           if (writev(fuse_fd, iov, 1) == -1) {
-            if (log_level >= LOG_NORMAL) perror("writev (FUSE_DESTROY)");
+            if (log_level >= LOG_NORMAL) perror("writev");
           }
 
           running = false;
