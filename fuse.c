@@ -13,7 +13,7 @@
 
 #define FUSE_FILE "/dev/fuse"
 #define DEFAULT_MOUNT_POINT "/mnt/kim"
-#define MAX_PAGES 64
+#define MAX_PAGES 64u
 
 #define PROTOCOL_VERSION_MAJOR 7
 #define PROTOCOL_VERSION_MINOR 39
@@ -39,6 +39,10 @@ void signal_handler(int sig) {
 
 int main(void) {
   long PAGE_SIZE = sysconf(_SC_PAGESIZE);
+  if (PAGE_SIZE == -1) {
+    perror("sysconf _SC_PAGESIZE");
+    exit(EXIT_FAILURE);
+  }
 
   atexit(cleanup);
   signal(SIGINT,  signal_handler);
@@ -47,7 +51,7 @@ int main(void) {
 
   fuse_fd = open(FUSE_FILE, O_RDWR);
   if (fuse_fd == -1) {
-    perror("open '" FUSE_FILE "'");
+    perror("open " FUSE_FILE);
     exit(EXIT_FAILURE);
   }
 
@@ -60,7 +64,7 @@ int main(void) {
     exit(EXIT_FAILURE);
   }
 
-  unsigned long buf_size = (MAX_PAGES + 1) * PAGE_SIZE;
+  unsigned long buf_size = (MAX_PAGES + 1) * (unsigned long) PAGE_SIZE;
   char buf[buf_size];
   long count;
   bool running = true;
@@ -111,7 +115,7 @@ int main(void) {
           .flags = 0,
           .max_background = 1,
           .congestion_threshold = 1,
-          .max_write = MAX_PAGES * PAGE_SIZE,
+          .max_write = MAX_PAGES * (unsigned) PAGE_SIZE,
           .time_gran = 1000000000, // 1s |  TODO: gran is not set for kim fs
           .max_pages = MAX_PAGES,
           .map_alignment = 0,
@@ -130,28 +134,39 @@ int main(void) {
         initialized = true;
       }
       continue;
-    } else if (!initialized) goto refuse_req;
+    } else if (!initialized) {
+      struct fuse_out_header out_header = (struct fuse_out_header) {
+        .len = sizeof(struct fuse_out_header),
+        .error = -EUNATCH,
+        .unique = in_header.unique
+      };
+
+      struct iovec iov[] = {
+        { &out_header, sizeof(struct fuse_out_header) }
+      };
+
+      if (writev(fuse_fd, iov, 1) == -1) {
+        perror("writev");
+        exit(EXIT_FAILURE);
+      }
+    }
     switch (in_header.opcode) {
       default:
-        goto refuse_req;
-    }
-    continue;
+        ;
+        struct fuse_out_header out_header = (struct fuse_out_header) {
+          .len = sizeof(struct fuse_out_header),
+          .error = -EOPNOTSUPP,
+          .unique = in_header.unique
+        };
 
-refuse_req:
-    ;
-    struct fuse_out_header out_header = (struct fuse_out_header) {
-      .len = sizeof(struct fuse_out_header),
-      .error = -EUNATCH,
-      .unique = in_header.unique
-    };
+        struct iovec iov[] = {
+          { &out_header, sizeof(struct fuse_out_header) }
+        };
 
-    struct iovec iov[] = {
-      { &out_header, sizeof(struct fuse_out_header) }
-    };
-
-    if (writev(fuse_fd, iov, 1) == -1) {
-      perror("writev");
-      exit(EXIT_FAILURE);
+        if (writev(fuse_fd, iov, 1) == -1) {
+          perror("writev");
+          exit(EXIT_FAILURE);
+        }
     }
   }
 
