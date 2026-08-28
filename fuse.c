@@ -5,12 +5,14 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <signal.h>
 #include <sys/mount.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
 #include "common.h"
+#include "fs.h"
 
 
 #define FILEPATH_ROOT "/"
@@ -22,19 +24,27 @@
 #define PROTOCOL_VERSION_MAJOR 7
 #define PROTOCOL_VERSION_MINOR 39
 
-int fuse_fd = -1;
 enum {
   LOG_QUIET   = 0,
   LOG_NORMAL  = 1,
   LOG_VERBOSE = 2
 } log_level = LOG_NORMAL;
+int fd = -1;
+int fuse_fd = -1;
+struct kim_fs_runtime runtime = {0};
 
 void cleanup(void) {
+  if (runtime.initialized)
+    if (kim_fs_flush_all(&runtime) == -1)
+      if (log_level >= LOG_NORMAL) perror("kim_fs_flush_all");
+
+  if (fd != -1)
+    if (close(fd) == -1)
+      if (log_level >= LOG_NORMAL) perror("close");
+
   if (fuse_fd != -1)
     if (close(fuse_fd) == -1)
       if (log_level >= LOG_NORMAL) perror("close");
-
-  // TODO: flush and save fs
 }
 
 void signal_handler(int sig) {
@@ -58,9 +68,25 @@ int main(void) {
   // TODO: parse command line arguments
   bool daemonize = false;
   log_level = LOG_VERBOSE;
+  char* filepath = "./img";
 
-  // TODO: initialize fs from file
-  // lock backing storage file to prevent access
+  fd = open(filepath, O_RDWR);
+  if (fd == -1) {
+    if (log_level >= LOG_NORMAL) {
+      unsigned size = (strlen(filepath) + 6) * sizeof(char);
+      char* buf = malloc(size);
+      snprintf(buf, size, "open %s", filepath);
+      perror(buf);
+      free(buf);
+    }
+    exit(EXIT_FAILURE);
+  }
+  if (kim_open_fs(&runtime, fd) == -1) {
+    if (log_level >= LOG_NORMAL) {
+      perror("kim_open_fs");
+    }
+    exit(EXIT_FAILURE);
+  }
 
   fuse_fd = open(FILEPATH_FUSE, O_RDWR);
   if (fuse_fd == -1) {
@@ -70,7 +96,7 @@ int main(void) {
 
   char options[128];
   snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%u,group_id=%u,default_permissions,allow_other", fuse_fd, getuid(), getgid());
-  if (mount("NAME", DEFAULT_MOUNT_POINT, "fuse.kim", 0, options) == -1) { // TODO: replace NAME with the name of the backing storage file
+  if (mount(filepath, DEFAULT_MOUNT_POINT, "fuse.kim", 0, options) == -1) { // TODO: reduce filepath
     if (log_level >= LOG_NORMAL) perror("mount");
     exit(EXIT_FAILURE);
   }
