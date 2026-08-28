@@ -56,7 +56,7 @@ int main(void) {
   signal(SIGHUP,  signal_handler);
 
   // TODO: parse command line arguments
-  bool daemonize = true;
+  bool daemonize = false;
   log_level = LOG_VERBOSE;
 
   // TODO: initialize fs from file
@@ -85,7 +85,7 @@ int main(void) {
       exit(EXIT_SUCCESS);
     }
 
-    if (setsid() == -1) {
+    if (setsid() == (pid_t) -1) {
       if (log_level >= LOG_NORMAL) perror("setsid");
       exit(EXIT_FAILURE);
     }
