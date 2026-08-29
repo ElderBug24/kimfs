@@ -31,7 +31,7 @@ enum {
 } log_level = LOG_NORMAL;
 int fd = -1;
 int fuse_fd = -1;
-struct kim_fs_runtime runtime = {0};
+struct kim_fs_runtime runtime = { .initialized = false };
 
 void cleanup(void) {
   if (runtime.initialized)
@@ -73,7 +73,7 @@ int main(void) {
   fd = open(filepath, O_RDWR);
   if (fd == -1) {
     if (log_level >= LOG_NORMAL) {
-      unsigned size = (strlen(filepath) + 6) * sizeof(char);
+      unsigned long size = (strlen(filepath) + 6) * sizeof(char);
       char* buf = malloc(size);
       snprintf(buf, size, "open %s", filepath);
       perror(buf);
@@ -95,7 +95,7 @@ int main(void) {
   }
 
   char options[128];
-  snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%u,group_id=%u,default_permissions,allow_other", fuse_fd, getuid(), getgid());
+  snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%ju,group_id=%ju,default_permissions,allow_other", fuse_fd, (uintmax_t) getuid(), (uintmax_t) getgid());
   if (mount(filepath, DEFAULT_MOUNT_POINT, "fuse.kim", 0, options) == -1) { // TODO: reduce filepath
     if (log_level >= LOG_NORMAL) perror("mount");
     exit(EXIT_FAILURE);
@@ -103,11 +103,11 @@ int main(void) {
 
   if (daemonize) { // TODO: log to a temp file
     pid_t pid = fork();
-    if (pid < 0) {
+    if (pid < (pid_t) 0) {
       if (log_level >= LOG_NORMAL) perror("fork");
       exit(EXIT_FAILURE);
     }
-    if (pid > 0) {
+    if (pid > (pid_t) 0) {
       exit(EXIT_SUCCESS);
     }
 
@@ -117,11 +117,11 @@ int main(void) {
     }
 
     pid = fork();
-    if (pid < 0) {
+    if (pid < (pid_t) 0) {
       if (log_level >= LOG_NORMAL) perror("fork");
       exit(EXIT_FAILURE);
     }
-    if (pid > 0) {
+    if (pid > (pid_t) 0) {
       if (log_level >= LOG_VERBOSE) printf("daemonized successfully. daemon PID: %jd\n", (intmax_t) pid);
       exit(EXIT_SUCCESS);
     }
