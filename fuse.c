@@ -15,10 +15,13 @@
 #include "fs.h"
 
 
+#define KIM_VERSION_MAJOR 0
+#define KIM_VERSION_MINOR 0
+#define KIM_VERSION_PATCH 0
+
 #define FILEPATH_ROOT "/"
 #define FILEPATH_NULL "/dev/null"
 #define FILEPATH_FUSE "/dev/fuse"
-#define DEFAULT_MOUNT_POINT "/mnt/kim"
 #define MAX_PAGES 64u
 
 #define PROTOCOL_VERSION_MAJOR 7
@@ -53,7 +56,26 @@ void signal_handler(int sig) {
   exit(EXIT_FAILURE);
 }
 
-int main(void) {
+void usage(int argc, char** argv) {
+  (void) argc;
+
+  printf(
+      "usage: %s [<options>...] <command> [<args>...]\n"
+      "       %s [<options>...] <filepath> <mountpoint>\n"
+      "options:\n"
+      "  --version -V  display version\n"
+      "  --help        display this help and exit\n"
+      "  --verbose -v  verbose mode\n"
+      "  --quiet   -q  quiet mode\n"
+      "  --[no-]daemon daemonize the server\n"
+      "commands:\n"
+      "  new           [<options>...] <filepath> <blocks> [block_size=%u]\n"
+      "  mount         [<options>...] <filepath> <mountpoint>\n"
+      "\n",
+      argv[0], argv[0], 512);
+}
+
+int main(int argc, char** argv) {
   long PAGE_SIZE = sysconf(_SC_PAGESIZE);
   if (PAGE_SIZE == -1) {
     if (log_level >= LOG_NORMAL) perror("kim: sysconf _SC_PAGESIZE");
@@ -66,9 +88,43 @@ int main(void) {
   signal(SIGHUP,  signal_handler);
 
   // TODO: parse command line arguments
-  bool daemonize = false;
   log_level = LOG_VERBOSE;
+  bool display_version = false;
+  bool daemonize = false;
   char* filepath = "./img";
+  char* mountpoint = "/mnt/kim";
+
+  if (argc == 0) {
+    errno = EIO;
+    perror("kim");
+    exit(EXIT_FAILURE);
+  } else if (argc == 1) {
+    fprintf(stderr, "kim: no input provided\n");
+    usage(argc, argv);
+    exit(EXIT_FAILURE);
+  } else {
+    unsigned i = 1;
+    while (argv[i][0] == '-') {
+      if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-V") == 0) {
+        display_version = true;
+      } else if (strcmp(argv[i], "--help")) {
+        usage(argc, argv);
+        exit(EXIT_SUCCESS);
+      } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
+        log_level = LOG_VERBOSE;
+      } else if (strcmp(argv[i], "--quiet") == 0 || strcmp(argv[i], "-q") == 0) {
+        log_level = LOG_QUIET;
+      } else if (strcmp(argv[i], "--daemon")) {
+        daemonize = true;
+      } else if (strcmp(argv[i], "--no-daemon")) {
+        daemonize = false;
+      }
+
+      i += 1;
+    }
+  }
+
+  if (display_version) printf("kim %u.%u.%u\n", KIM_VERSION_MAJOR, KIM_VERSION_MINOR, KIM_VERSION_PATCH);
 
   fd = open(filepath, O_RDWR);
   if (fd == -1) {
@@ -96,7 +152,7 @@ int main(void) {
 
   char options[128];
   snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%ju,group_id=%ju,default_permissions,allow_other", fuse_fd, (uintmax_t) getuid(), (uintmax_t) getgid());
-  if (mount(filepath, DEFAULT_MOUNT_POINT, "fuse.kim", 0, options) == -1) { // TODO: reduce filepath
+  if (mount(filepath, mountpoint, "fuse.kim", 0, options) == -1) { // TODO: reduce filepath
     if (log_level >= LOG_NORMAL) perror("kim: mount");
     exit(EXIT_FAILURE);
   }
