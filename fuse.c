@@ -36,15 +36,15 @@ struct kim_fs_runtime runtime = { .initialized = false };
 void cleanup(void) {
   if (runtime.initialized)
     if (kim_fs_flush_all(&runtime) == -1)
-      if (log_level >= LOG_NORMAL) perror("kim_fs_flush_all");
+      if (log_level >= LOG_NORMAL) perror("kim: kim_fs_flush_all");
 
   if (fd != -1)
     if (close(fd) == -1)
-      if (log_level >= LOG_NORMAL) perror("close");
+      if (log_level >= LOG_NORMAL) perror("kim: close");
 
   if (fuse_fd != -1)
     if (close(fuse_fd) == -1)
-      if (log_level >= LOG_NORMAL) perror("close");
+      if (log_level >= LOG_NORMAL) perror("kim: close");
 }
 
 void signal_handler(int sig) {
@@ -56,7 +56,7 @@ void signal_handler(int sig) {
 int main(void) {
   long PAGE_SIZE = sysconf(_SC_PAGESIZE);
   if (PAGE_SIZE == -1) {
-    if (log_level >= LOG_NORMAL) perror("sysconf _SC_PAGESIZE");
+    if (log_level >= LOG_NORMAL) perror("kim: sysconf _SC_PAGESIZE");
     exit(EXIT_FAILURE);
   }
 
@@ -75,7 +75,7 @@ int main(void) {
     if (log_level >= LOG_NORMAL) {
       unsigned long size = (strlen(filepath) + 6) * sizeof(char);
       char* buf = malloc(size);
-      snprintf(buf, size, "open %s", filepath);
+      snprintf(buf, size, "kim: open %s", filepath);
       perror(buf);
       free(buf);
     }
@@ -83,28 +83,28 @@ int main(void) {
   }
   if (kim_open_fs(&runtime, fd) == -1) {
     if (log_level >= LOG_NORMAL) {
-      perror("kim_open_fs");
+      perror("kim: kim_open_fs");
     }
     exit(EXIT_FAILURE);
   }
 
   fuse_fd = open(FILEPATH_FUSE, O_RDWR);
   if (fuse_fd == -1) {
-    if (log_level >= LOG_NORMAL) perror("open " FILEPATH_FUSE);
+    if (log_level >= LOG_NORMAL) perror("kim: open " FILEPATH_FUSE);
     exit(EXIT_FAILURE);
   }
 
   char options[128];
   snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%ju,group_id=%ju,default_permissions,allow_other", fuse_fd, (uintmax_t) getuid(), (uintmax_t) getgid());
   if (mount(filepath, DEFAULT_MOUNT_POINT, "fuse.kim", 0, options) == -1) { // TODO: reduce filepath
-    if (log_level >= LOG_NORMAL) perror("mount");
+    if (log_level >= LOG_NORMAL) perror("kim: mount");
     exit(EXIT_FAILURE);
   }
 
   if (daemonize) { // TODO: log to a temp file
     pid_t pid = fork();
     if (pid < (pid_t) 0) {
-      if (log_level >= LOG_NORMAL) perror("fork");
+      if (log_level >= LOG_NORMAL) perror("kim: fork");
       exit(EXIT_FAILURE);
     }
     if (pid > (pid_t) 0) {
@@ -112,39 +112,39 @@ int main(void) {
     }
 
     if (setsid() == (pid_t) -1) {
-      if (log_level >= LOG_NORMAL) perror("setsid");
+      if (log_level >= LOG_NORMAL) perror("kim: setsid");
       exit(EXIT_FAILURE);
     }
 
     pid = fork();
     if (pid < (pid_t) 0) {
-      if (log_level >= LOG_NORMAL) perror("fork");
+      if (log_level >= LOG_NORMAL) perror("kim: fork");
       exit(EXIT_FAILURE);
     }
     if (pid > (pid_t) 0) {
-      if (log_level >= LOG_VERBOSE) printf("daemonized successfully. daemon PID: %jd\n", (intmax_t) pid);
+      if (log_level >= LOG_VERBOSE) printf("kim: daemonized successfully. daemon PID: %jd\n", (intmax_t) pid);
       exit(EXIT_SUCCESS);
     }
 
     if (chdir(FILEPATH_ROOT) == -1) {
-      if (log_level >= LOG_NORMAL) perror("chdir " FILEPATH_ROOT);
+      if (log_level >= LOG_NORMAL) perror("kim: chdir " FILEPATH_ROOT);
       exit(EXIT_FAILURE);
     }
 
     int null_fd = open(FILEPATH_NULL, O_RDWR);
     if (null_fd == -1) {
-      if (log_level >= LOG_NORMAL) perror("open " FILEPATH_NULL);
+      if (log_level >= LOG_NORMAL) perror("kim: open " FILEPATH_NULL);
       exit(EXIT_FAILURE);
     }
     if    (dup2(null_fd, STDIN_FILENO)  == -1
         || dup2(null_fd, STDOUT_FILENO) == -1
         || dup2(null_fd, STDERR_FILENO) == -1) {
-      if (log_level >= LOG_NORMAL) perror("dup2");
+      if (log_level >= LOG_NORMAL) perror("kim: dup2");
       exit(EXIT_FAILURE);
     }
     if (null_fd > 2) {
       if (close(null_fd) == -1) {
-        if (log_level >= LOG_NORMAL) perror("close");
+        if (log_level >= LOG_NORMAL) perror("kim: close");
         exit(EXIT_FAILURE);
       }
     }
@@ -158,19 +158,19 @@ int main(void) {
   while (running) {
     count = read(fuse_fd, buf, buf_size);
     if (count == -1) {
-      if (log_level >= LOG_NORMAL) perror("read");
+      if (log_level >= LOG_NORMAL) perror("kim: read");
       exit(EXIT_FAILURE);
     }
 
     struct fuse_in_header in_header = *(struct fuse_in_header*) buf;
     void* payload = &buf[sizeof(struct fuse_in_header)];
 
-    if (log_level >= LOG_VERBOSE) printf("received %s (%u) from the kernel\n", fuse_opcode_enum_str[in_header.opcode], in_header.opcode);
+    if (log_level >= LOG_VERBOSE) printf("kim: received %s (%u) from the kernel\n", fuse_opcode_enum_str[in_header.opcode], in_header.opcode);
     if (in_header.opcode == FUSE_INIT) {
       struct fuse_init_in init_in = *(struct fuse_init_in*) payload;
-      if (log_level >= LOG_VERBOSE) printf("kernel's FUSE protocol version is %u.%u (supported is %u.%u)\n", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
+      if (log_level >= LOG_VERBOSE) printf("kim: kernel's FUSE protocol version is %u.%u (supported is %u.%u)\n", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
       if (init_in.major < PROTOCOL_VERSION_MAJOR) {
-        if (log_level >= LOG_NORMAL) fprintf(stderr, "error: kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
+        if (log_level >= LOG_NORMAL) fprintf(stderr, "kim: kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
         exit(EXIT_FAILURE);
       } else if (init_in.major > PROTOCOL_VERSION_MAJOR) {
         struct fuse_out_header out_header = (struct fuse_out_header) {
@@ -185,7 +185,7 @@ int main(void) {
         };
 
         if (writev(fuse_fd, iov, 2) == -1) {
-          if (log_level >= LOG_NORMAL) perror("writev");
+          if (log_level >= LOG_NORMAL) perror("kim: writev");
           exit(EXIT_FAILURE);
         }
       } else {
@@ -213,7 +213,7 @@ int main(void) {
         };
 
         if (writev(fuse_fd, iov, 2) == -1) {
-          if (log_level >= LOG_NORMAL) perror("writev");
+          if (log_level >= LOG_NORMAL) perror("kim: writev");
           exit(EXIT_FAILURE);
         }
 
@@ -232,7 +232,7 @@ int main(void) {
       };
 
       if (writev(fuse_fd, iov, 1) == -1) {
-        if (log_level >= LOG_NORMAL) perror("writev");
+        if (log_level >= LOG_NORMAL) perror("kim: writev");
         exit(EXIT_FAILURE);
       }
     }
@@ -250,7 +250,7 @@ int main(void) {
           };
 
           if (writev(fuse_fd, iov, 1) == -1) {
-            if (log_level >= LOG_NORMAL) perror("writev");
+            if (log_level >= LOG_NORMAL) perror("kim: writev");
           }
 
           running = false;
@@ -269,7 +269,7 @@ int main(void) {
           };
 
           if (writev(fuse_fd, iov, 1) == -1) {
-            if (log_level >= LOG_NORMAL) perror("writev");
+            if (log_level >= LOG_NORMAL) perror("kim: writev");
             exit(EXIT_FAILURE);
           }
         }
