@@ -8,7 +8,7 @@
 
 
 int kim_new_fs(int fd, uint64_t blocks, uint32_t block_size) {
-  if (block_size < sizeof(struct kim_fs_header)) {
+  if (block_size < sizeof(struct kim_fs_header) || blocks == 0) {
     errno = EINVAL;
     return -1;
   }
