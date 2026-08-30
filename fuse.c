@@ -37,6 +37,7 @@ int fd = -1;
 int fuse_fd = -1;
 struct kim_fs_runtime runtime = { .initialized = false };
 char* executable_name;
+long PAGE_SIZE = -1;
 
 void cleanup(void) {
   if (runtime.initialized)
@@ -59,6 +60,266 @@ void signal_handler(int sig) {
   (void) sig;
 
   exit(EXIT_FAILURE);
+}
+
+int kim_fuse_new(char* filepath, unsigned long long blocks, unsigned long block_size) {
+  fd = open(filepath, O_CREAT | O_RDWR);
+  if (fd == -1) {
+    if (log_level >= LOG_NORMAL)
+      warn("open");
+    errno = EIO;
+    return -1;
+  }
+
+  if (kim_new_fs(fd, (uint64_t) blocks, (uint32_t) block_size) == -1) {
+    if (log_level >= LOG_NORMAL)
+      warn("kim_new_fs");
+    errno = EIO;
+    return -1;
+  }
+
+  return 0;
+}
+
+int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
+  fd = open(filepath, O_RDWR);
+  if (fd == -1) {
+    if (log_level >= LOG_NORMAL)
+      warn("open %s", filepath);
+    errno = EIO;
+    return -1;
+  }
+  if (kim_open_fs(&runtime, fd) == -1) {
+    if (log_level >= LOG_NORMAL)
+      warn("kim_open_fs");
+    errno = EIO;
+    return -1;
+  }
+
+  fuse_fd = open(FILEPATH_FUSE, O_RDWR);
+  if (fuse_fd == -1) {
+    if (log_level >= LOG_NORMAL)
+      warn("open " FILEPATH_FUSE);
+    errno = EIO;
+    return -1;
+  }
+
+  char options[128];
+  snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%ju,group_id=%ju,default_permissions,allow_other", fuse_fd, (uintmax_t) getuid(), (uintmax_t) getgid());
+  if (mount(filepath, mountpoint, "fuse.kim", 0, options) == -1) { // TODO: reduce filepath
+    if (log_level >= LOG_NORMAL)
+      warn("mount");
+    errno = EIO;
+    return -1;
+  }
+
+  if (daemonize) { // TODO: log to a temp file
+    pid_t pid = fork();
+    if (pid < (pid_t) 0) {
+      if (log_level >= LOG_NORMAL)
+        warn("fork");
+      errno = EIO;
+      return -1;
+    }
+    if (pid > (pid_t) 0)
+      exit(EXIT_SUCCESS);
+
+    if (setsid() == (pid_t) -1) {
+      if (log_level >= LOG_NORMAL)
+        warn("setsid");
+      errno = EIO;
+      return -1;
+    }
+
+    pid = fork();
+    if (pid < (pid_t) 0) {
+      if (log_level >= LOG_NORMAL)
+        warn("fork");
+      errno = EIO;
+      return -1;
+    }
+    if (pid > (pid_t) 0) {
+      if (log_level >= LOG_VERBOSE)
+        printf("%s: Daemonized successfully. Daemon PID: %jd\n", executable_name, (intmax_t) pid);
+      exit(EXIT_SUCCESS);
+    }
+
+    if (chdir(FILEPATH_ROOT) == -1) {
+      if (log_level >= LOG_NORMAL)
+        warn("chdir " FILEPATH_ROOT);
+      errno = EIO;
+      return -1;
+    }
+
+    int null_fd = open(FILEPATH_NULL, O_RDWR);
+    if (null_fd == -1) {
+      if (log_level >= LOG_NORMAL)
+        warn("open " FILEPATH_NULL);
+      errno = EIO;
+      return -1;
+    }
+    if    (dup2(null_fd, STDIN_FILENO)  == -1
+        || dup2(null_fd, STDOUT_FILENO) == -1
+        || dup2(null_fd, STDERR_FILENO) == -1) {
+      if (log_level >= LOG_NORMAL)
+        warn("dup2");
+      errno = EIO;
+      return -1;
+    }
+    if (null_fd > 2) {
+      if (close(null_fd) == -1) {
+        if (log_level >= LOG_NORMAL)
+          warn("close");
+        errno = EIO;
+        return -1;
+      }
+    }
+  }
+
+  unsigned long buf_size = (MAX_PAGES + 1) * (unsigned long) PAGE_SIZE;
+  char buf[buf_size];
+  long count;
+  bool running     = true;
+  bool initialized = false;
+  while (running) {
+    count = read(fuse_fd, buf, buf_size);
+    if (count == -1) {
+      if (log_level >= LOG_NORMAL)
+        warn("read");
+      errno = EIO;
+      return -1;
+    }
+
+    struct fuse_in_header in_header = *(struct fuse_in_header*) buf;
+    void* payload = &buf[sizeof(struct fuse_in_header)];
+
+    if (log_level >= LOG_VERBOSE)
+      printf("%s: Received %s (%u) from the kernel\n", executable_name, fuse_opcode_enum_str[in_header.opcode], in_header.opcode);
+    if (in_header.opcode == FUSE_INIT) {
+      struct fuse_init_in init_in = *(struct fuse_init_in*) payload;
+      if (log_level >= LOG_VERBOSE)
+        printf("%s: Kernel's FUSE protocol version is %u.%u (supported is %u.%u)\n", executable_name, init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
+      if (init_in.major < PROTOCOL_VERSION_MAJOR) {
+        if (log_level >= LOG_NORMAL)
+          warnx("Kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
+        errno = EPROTONOSUPPORT;
+        return -1;
+      } else if (init_in.major > PROTOCOL_VERSION_MAJOR) {
+        struct fuse_out_header out_header = (struct fuse_out_header) {
+          .len = sizeof(struct fuse_out_header) + sizeof(uint32_t),
+          .error = 0,
+          .unique = in_header.unique
+        };
+        uint32_t major = PROTOCOL_VERSION_MAJOR;
+        struct iovec iov[] = {
+          { &out_header, sizeof(struct fuse_out_header) },
+          { &major,      sizeof(uint32_t)               }
+        };
+
+        if (writev(fuse_fd, iov, 2) == -1) {
+          if (log_level >= LOG_NORMAL)
+            warn("writev");
+          errno = EIO;
+          return -1;
+        }
+      } else {
+        struct fuse_out_header out_header = (struct fuse_out_header) {
+          .len = sizeof(struct fuse_out_header) + sizeof(struct fuse_init_out),
+          .error = 0,
+          .unique = in_header.unique
+        };
+        struct fuse_init_out init_out = (struct fuse_init_out) {
+          .major = PROTOCOL_VERSION_MAJOR,
+          .minor = PROTOCOL_VERSION_MINOR,
+          .max_readahead = init_in.max_readahead,
+          .flags = 0,
+          .max_background = 1,
+          .congestion_threshold = 1,
+          .max_write = MAX_PAGES * (unsigned) PAGE_SIZE,
+          .time_gran = 1000000000, // 1s |  TODO: gran is not set for kim fs
+          .max_pages = MAX_PAGES,
+          .map_alignment = 0,
+          .flags2 = 0,
+        };
+        struct iovec iov[] = {
+          { &out_header, sizeof(struct fuse_out_header) },
+          { &init_out,   sizeof(struct fuse_init_out)   }
+        };
+
+        if (writev(fuse_fd, iov, 2) == -1) {
+          if (log_level >= LOG_NORMAL)
+            warn("writev");
+          errno = EIO;
+          return -1;
+        }
+
+        initialized = true;
+      }
+      continue;
+    } else if (!initialized) {
+      struct fuse_out_header out_header = (struct fuse_out_header) {
+        .len = sizeof(struct fuse_out_header),
+        .error = -EUNATCH,
+        .unique = in_header.unique
+      };
+
+      struct iovec iov[] = {
+        { &out_header, sizeof(struct fuse_out_header) }
+      };
+
+      if (writev(fuse_fd, iov, 1) == -1) {
+        if (log_level >= LOG_NORMAL)
+          warn("writev");
+        errno = EIO;
+        return -1;
+      }
+    }
+    switch (in_header.opcode) {
+      case FUSE_DESTROY:
+        {
+          struct fuse_out_header out_header = (struct fuse_out_header) {
+            .len = sizeof(struct fuse_out_header),
+            .error = 0,
+            .unique = in_header.unique
+          };
+
+          struct iovec iov[] = {
+            { &out_header, sizeof(struct fuse_out_header) }
+          };
+
+          if (writev(fuse_fd, iov, 1) == -1) {
+            if (log_level >= LOG_NORMAL)
+              warn("writev");
+            errno = EIO;
+            return -1;
+          }
+
+          running = false;
+          break;
+        }
+      default:
+        {
+          struct fuse_out_header out_header = (struct fuse_out_header) {
+            .len = sizeof(struct fuse_out_header),
+            .error = -EOPNOTSUPP,
+            .unique = in_header.unique
+          };
+
+          struct iovec iov[] = {
+            { &out_header, sizeof(struct fuse_out_header) }
+          };
+
+          if (writev(fuse_fd, iov, 1) == -1) {
+            if (log_level >= LOG_NORMAL)
+              warn("writev");
+            errno = EIO;
+            return -1;
+          }
+        }
+    }
+  }
+
+  return 0;
 }
 
 void usage(int argc, char** argv) {
@@ -87,7 +348,7 @@ void usage(int argc, char** argv) {
 int main(int argc, char** argv) {
   executable_name = argv[0];
 
-  long PAGE_SIZE = sysconf(_SC_PAGESIZE);
+  PAGE_SIZE = sysconf(_SC_PAGESIZE);
   if (PAGE_SIZE == -1) {
     if (log_level >= LOG_NORMAL)
       warn("sysconf _SC_PAGESIZE");
@@ -105,15 +366,21 @@ int main(int argc, char** argv) {
   else
     executable_name += 1;
 
-  log_level = LOG_VERBOSE;
+  log_level = LOG_NORMAL;
   bool display_version = false;
   bool display_help = false;
-  bool daemonize = false;
+  bool daemonize = true;
 
-  long long new_blocks = -1;
+  long long new_blocks = -1; // TODO: don't need signed if command parsing requires all arguments already
   long long new_block_size = -1;
   char* filepath = NULL;
   char* mountpoint = NULL;
+
+  enum command_e {
+    COMMAND_NONE,
+    COMMAND_NEW,
+    COMMAND_MOUNT
+  } program_command = COMMAND_NONE;
 
   if (argc == 0) {
     errno = EIO;
@@ -127,11 +394,7 @@ int main(int argc, char** argv) {
     }
     exit(EXIT_FAILURE);
   } else {
-    enum {
-      COMMAND_NONE,
-      COMMAND_NEW,
-      COMMAND_MOUNT
-    } command = COMMAND_MOUNT;
+    enum command_e command = COMMAND_MOUNT;
     enum {
       EXPECT_NONE,
       EXPECT_NEW_FILEPATH,
@@ -184,7 +447,7 @@ int main(int argc, char** argv) {
             {
               errno = 0;
               char* end = NULL;
-              unsigned long blocks = strtoul(argv[i], &end, 0);
+              unsigned long long blocks = strtoull(argv[i], &end, 0);
               if (errno != 0) {
                 if (log_level >= LOG_NORMAL)
                   warn("strtoul");
@@ -217,6 +480,7 @@ int main(int argc, char** argv) {
               new_block_size = (long long) blocks;
               expecting = EXPECT_NONE;
               command = COMMAND_NONE;
+              program_command = COMMAND_NEW;
               break;
             }
           case EXPECT_MOUNT_FILEPATH:
@@ -227,12 +491,12 @@ int main(int argc, char** argv) {
             mountpoint = argv[i];
             expecting = EXPECT_NONE;
             command = COMMAND_NONE;
+            program_command = COMMAND_MOUNT;
             break;
         }
       }
     }
 
-    // TODO: switch command and call either kim_fuse_new or kim_fuse_mount, or error out
     if (command != COMMAND_NONE || expecting != EXPECT_NONE) {
       if (log_level >= LOG_NORMAL) {
         warnx("Incomplete command");
@@ -249,223 +513,31 @@ int main(int argc, char** argv) {
   if (display_version || display_help)
     exit(EXIT_SUCCESS);
 
-  fd = open(filepath, O_RDWR);
-  if (fd == -1) {
-    if (log_level >= LOG_NORMAL)
-      warn("open %s", filepath);
-    exit(EXIT_FAILURE);
-  }
-  if (kim_open_fs(&runtime, fd) == -1) {
-    if (log_level >= LOG_NORMAL)
-      warn("kim_open_fs");
-    exit(EXIT_FAILURE);
-  }
-
-  fuse_fd = open(FILEPATH_FUSE, O_RDWR);
-  if (fuse_fd == -1) {
-    if (log_level >= LOG_NORMAL)
-      warn("open " FILEPATH_FUSE);
-    exit(EXIT_FAILURE);
-  }
-
-  char options[128];
-  snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%ju,group_id=%ju,default_permissions,allow_other", fuse_fd, (uintmax_t) getuid(), (uintmax_t) getgid());
-  if (mount(filepath, mountpoint, "fuse.kim", 0, options) == -1) { // TODO: reduce filepath
-    if (log_level >= LOG_NORMAL)
-      warn("mount");
-    exit(EXIT_FAILURE);
-  }
-
-  if (daemonize) { // TODO: log to a temp file
-    pid_t pid = fork();
-    if (pid < (pid_t) 0) {
-      if (log_level >= LOG_NORMAL)
-        warn("fork");
-      exit(EXIT_FAILURE);
-    }
-    if (pid > (pid_t) 0)
-      exit(EXIT_SUCCESS);
-
-    if (setsid() == (pid_t) -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("setsid");
-      exit(EXIT_FAILURE);
-    }
-
-    pid = fork();
-    if (pid < (pid_t) 0) {
-      if (log_level >= LOG_NORMAL)
-        warn("fork");
-      exit(EXIT_FAILURE);
-    }
-    if (pid > (pid_t) 0) {
-      if (log_level >= LOG_VERBOSE)
-        printf("%s: Daemonized successfully. Daemon PID: %jd\n", executable_name, (intmax_t) pid);
-      exit(EXIT_SUCCESS);
-    }
-
-    if (chdir(FILEPATH_ROOT) == -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("chdir " FILEPATH_ROOT);
-      exit(EXIT_FAILURE);
-    }
-
-    int null_fd = open(FILEPATH_NULL, O_RDWR);
-    if (null_fd == -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("open " FILEPATH_NULL);
-      exit(EXIT_FAILURE);
-    }
-    if    (dup2(null_fd, STDIN_FILENO)  == -1
-        || dup2(null_fd, STDOUT_FILENO) == -1
-        || dup2(null_fd, STDERR_FILENO) == -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("dup2");
-      exit(EXIT_FAILURE);
-    }
-    if (null_fd > 2) {
-      if (close(null_fd) == -1) {
+  switch (program_command) {
+    case COMMAND_NONE:
+      {
         if (log_level >= LOG_NORMAL)
-          warn("close");
+          warnx("No command provided");
         exit(EXIT_FAILURE);
       }
-    }
-  }
-
-  unsigned long buf_size = (MAX_PAGES + 1) * (unsigned long) PAGE_SIZE;
-  char buf[buf_size];
-  long count;
-  bool running     = true;
-  bool initialized = false;
-  while (running) {
-    count = read(fuse_fd, buf, buf_size);
-    if (count == -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("read");
-      exit(EXIT_FAILURE);
-    }
-
-    struct fuse_in_header in_header = *(struct fuse_in_header*) buf;
-    void* payload = &buf[sizeof(struct fuse_in_header)];
-
-    if (log_level >= LOG_VERBOSE)
-      printf("%s: Received %s (%u) from the kernel\n", executable_name, fuse_opcode_enum_str[in_header.opcode], in_header.opcode);
-    if (in_header.opcode == FUSE_INIT) {
-      struct fuse_init_in init_in = *(struct fuse_init_in*) payload;
-      if (log_level >= LOG_VERBOSE)
-        printf("%s: Kernel's FUSE protocol version is %u.%u (supported is %u.%u)\n", executable_name, init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
-      if (init_in.major < PROTOCOL_VERSION_MAJOR) {
-        if (log_level >= LOG_NORMAL)
-          warnx("Kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
-        exit(EXIT_FAILURE);
-      } else if (init_in.major > PROTOCOL_VERSION_MAJOR) {
-        struct fuse_out_header out_header = (struct fuse_out_header) {
-          .len = sizeof(struct fuse_out_header) + sizeof(uint32_t),
-          .error = 0,
-          .unique = in_header.unique
-        };
-        uint32_t major = PROTOCOL_VERSION_MAJOR;
-        struct iovec iov[] = {
-          { &out_header, sizeof(struct fuse_out_header) },
-          { &major,      sizeof(uint32_t)               }
-        };
-
-        if (writev(fuse_fd, iov, 2) == -1) {
+    case COMMAND_NEW:
+      {
+        if (kim_fuse_new(filepath, (long long unsigned) new_blocks, (long unsigned) new_block_size) == -1) {
           if (log_level >= LOG_NORMAL)
-            warn("writev");
+            warn("kim_fuse_new");
           exit(EXIT_FAILURE);
         }
-      } else {
-        struct fuse_out_header out_header = (struct fuse_out_header) {
-          .len = sizeof(struct fuse_out_header) + sizeof(struct fuse_init_out),
-          .error = 0,
-          .unique = in_header.unique
-        };
-        struct fuse_init_out init_out = (struct fuse_init_out) {
-          .major = PROTOCOL_VERSION_MAJOR,
-          .minor = PROTOCOL_VERSION_MINOR,
-          .max_readahead = init_in.max_readahead,
-          .flags = 0,
-          .max_background = 1,
-          .congestion_threshold = 1,
-          .max_write = MAX_PAGES * (unsigned) PAGE_SIZE,
-          .time_gran = 1000000000, // 1s |  TODO: gran is not set for kim fs
-          .max_pages = MAX_PAGES,
-          .map_alignment = 0,
-          .flags2 = 0,
-        };
-        struct iovec iov[] = {
-          { &out_header, sizeof(struct fuse_out_header) },
-          { &init_out,   sizeof(struct fuse_init_out)   }
-        };
-
-        if (writev(fuse_fd, iov, 2) == -1) {
+        break;
+      }
+    case COMMAND_MOUNT:
+      {
+        if (kim_fuse_mount(filepath, mountpoint, daemonize) == -1) {
           if (log_level >= LOG_NORMAL)
-            warn("writev");
+            warn("kim_fuse_mount");
           exit(EXIT_FAILURE);
         }
-
-        initialized = true;
+        break;
       }
-      continue;
-    } else if (!initialized) {
-      struct fuse_out_header out_header = (struct fuse_out_header) {
-        .len = sizeof(struct fuse_out_header),
-        .error = -EUNATCH,
-        .unique = in_header.unique
-      };
-
-      struct iovec iov[] = {
-        { &out_header, sizeof(struct fuse_out_header) }
-      };
-
-      if (writev(fuse_fd, iov, 1) == -1) {
-        if (log_level >= LOG_NORMAL)
-          warn("writev");
-        exit(EXIT_FAILURE);
-      }
-    }
-    switch (in_header.opcode) {
-      case FUSE_DESTROY:
-        {
-          struct fuse_out_header out_header = (struct fuse_out_header) {
-            .len = sizeof(struct fuse_out_header),
-            .error = 0,
-            .unique = in_header.unique
-          };
-
-          struct iovec iov[] = {
-            { &out_header, sizeof(struct fuse_out_header) }
-          };
-
-          if (writev(fuse_fd, iov, 1) == -1) {
-            if (log_level >= LOG_NORMAL)
-              warn("writev");
-            exit(EXIT_FAILURE);
-          }
-
-          running = false;
-          break;
-        }
-      default:
-        {
-          struct fuse_out_header out_header = (struct fuse_out_header) {
-            .len = sizeof(struct fuse_out_header),
-            .error = -EOPNOTSUPP,
-            .unique = in_header.unique
-          };
-
-          struct iovec iov[] = {
-            { &out_header, sizeof(struct fuse_out_header) }
-          };
-
-          if (writev(fuse_fd, iov, 1) == -1) {
-            if (log_level >= LOG_NORMAL)
-              warn("writev");
-            exit(EXIT_FAILURE);
-          }
-        }
-    }
   }
 
   return EXIT_SUCCESS;
