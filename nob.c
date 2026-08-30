@@ -9,7 +9,7 @@ int main(int argc, char** argv) {
 
   Nob_Cmd cmd = {0};
 
-  nob_cmd_append(&cmd, "gcc", "-x", "c", "-Wall", "-Wextra", "-Wconversion", "-pedantic", "-fsanitize=address", "-ggdb", "fuse.c", "common.c", "fs.c", "-o", "build/kim");
+  nob_cmd_append(&cmd, "gcc", "-x", "c", "-Wall", "-Wextra", "-Wconversion", "-pedantic", "-fsanitize=address", "-ggdb", "-D_FILE_OFFSET_BITS=64", "fuse.c", "common.c", "fs.c", "-o", "build/kim");
   if (!nob_cmd_run(&cmd)) return 1;
 
   return 0;
