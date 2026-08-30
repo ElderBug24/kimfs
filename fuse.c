@@ -41,15 +41,18 @@ char* executable_name;
 void cleanup(void) {
   if (runtime.initialized)
     if (kim_fs_flush_all(&runtime) == -1)
-      if (log_level >= LOG_NORMAL) warn("kim_fs_flush_all");
+      if (log_level >= LOG_NORMAL)
+        warn("kim_fs_flush_all");
 
   if (fd != -1)
     if (close(fd) == -1)
-      if (log_level >= LOG_NORMAL) warn("close");
+      if (log_level >= LOG_NORMAL)
+        warn("close");
 
   if (fuse_fd != -1)
     if (close(fuse_fd) == -1)
-      if (log_level >= LOG_NORMAL) warn("close");
+      if (log_level >= LOG_NORMAL)
+        warn("close");
 }
 
 void signal_handler(int sig) {
@@ -86,7 +89,8 @@ int main(int argc, char** argv) {
 
   long PAGE_SIZE = sysconf(_SC_PAGESIZE);
   if (PAGE_SIZE == -1) {
-    if (log_level >= LOG_NORMAL) warn("sysconf _SC_PAGESIZE");
+    if (log_level >= LOG_NORMAL)
+      warn("sysconf _SC_PAGESIZE");
     exit(EXIT_FAILURE);
   }
 
@@ -113,7 +117,8 @@ int main(int argc, char** argv) {
 
   if (argc == 0) {
     errno = EIO;
-    if (log_level >= LOG_NORMAL) warn(NULL);
+    if (log_level >= LOG_NORMAL)
+      warn(NULL);
     exit(EXIT_FAILURE);
   } else if (argc == 1) {
     if (log_level >= LOG_NORMAL) {
@@ -150,14 +155,16 @@ int main(int argc, char** argv) {
         daemonize = false;
       else if (strcmp(argv[i], "new") == 0) {
         if (expecting == EXPECT_NONE) {
-          if (log_level >= LOG_NORMAL) warnx("Only one command may be executed");
+          if (log_level >= LOG_NORMAL)
+            warnx("Only one command may be executed");
           exit(EXIT_FAILURE);
         }
         command = COMMAND_NEW;
         expecting = EXPECT_NEW_FILEPATH;
       } else if (strcmp(argv[i], "mount") == 0) {
         if (expecting == EXPECT_NONE) {
-          if (log_level >= LOG_NORMAL) warnx("Only one command may be executed");
+          if (log_level >= LOG_NORMAL)
+            warnx("Only one command may be executed");
           exit(EXIT_FAILURE);
         }
         command = COMMAND_MOUNT;
@@ -165,7 +172,8 @@ int main(int argc, char** argv) {
       } else {
         switch (expecting) {
           case EXPECT_NONE:
-            if (log_level >= LOG_NORMAL) warnx("Unknown argument '%s'", argv[i]);
+            if (log_level >= LOG_NORMAL)
+              warnx("Unknown argument '%s'", argv[i]);
             exit(EXIT_FAILURE);
             break;
           case EXPECT_NEW_FILEPATH:
@@ -178,10 +186,12 @@ int main(int argc, char** argv) {
               char* end = NULL;
               unsigned long blocks = strtoul(argv[i], &end, 0);
               if (errno != 0) {
-                if (log_level >= LOG_NORMAL) warn("strtoul");
+                if (log_level >= LOG_NORMAL)
+                  warn("strtoul");
                 exit(EXIT_FAILURE);
               } else if (end == argv[i]) {
-                if (log_level >= LOG_NORMAL) warnx("Could not parse '%s' as an unsigned integer\n", argv[1]);
+                if (log_level >= LOG_NORMAL)
+                  warnx("Could not parse '%s' as an unsigned integer\n", argv[1]);
                 exit(EXIT_FAILURE);
               }
 
@@ -195,10 +205,12 @@ int main(int argc, char** argv) {
               char* end = NULL;
               unsigned long blocks = strtoul(argv[i], &end, 0);
               if (errno != 0) {
-                if (log_level >= LOG_NORMAL) warn("strtoul");
+                if (log_level >= LOG_NORMAL)
+                  warn("strtoul");
                 exit(EXIT_FAILURE);
               } else if (end == argv[i]) {
-                if (log_level >= LOG_NORMAL) warnx("Could not parse '%s' as an unsigned integer\n", argv[1]);
+                if (log_level >= LOG_NORMAL)
+                  warnx("Could not parse '%s' as an unsigned integer\n", argv[1]);
                 exit(EXIT_FAILURE);
               }
 
@@ -230,77 +242,91 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (display_version) printf("kim %u.%u.%u (FUSE %u.%u)\n", KIM_VERSION_MAJOR, KIM_VERSION_MINOR, KIM_VERSION_PATCH, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
-  if (display_help) usage(argc, argv);
-  if (display_version || display_help) exit(EXIT_SUCCESS);
+  if (display_version)
+    printf("kim %u.%u.%u (FUSE %u.%u)\n", KIM_VERSION_MAJOR, KIM_VERSION_MINOR, KIM_VERSION_PATCH, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
+  if (display_help)
+    usage(argc, argv);
+  if (display_version || display_help)
+    exit(EXIT_SUCCESS);
 
   fd = open(filepath, O_RDWR);
   if (fd == -1) {
-    if (log_level >= LOG_NORMAL) warn("open %s", filepath);
+    if (log_level >= LOG_NORMAL)
+      warn("open %s", filepath);
     exit(EXIT_FAILURE);
   }
   if (kim_open_fs(&runtime, fd) == -1) {
-    if (log_level >= LOG_NORMAL) warn("kim_open_fs");
+    if (log_level >= LOG_NORMAL)
+      warn("kim_open_fs");
     exit(EXIT_FAILURE);
   }
 
   fuse_fd = open(FILEPATH_FUSE, O_RDWR);
   if (fuse_fd == -1) {
-    if (log_level >= LOG_NORMAL) warn("open " FILEPATH_FUSE);
+    if (log_level >= LOG_NORMAL)
+      warn("open " FILEPATH_FUSE);
     exit(EXIT_FAILURE);
   }
 
   char options[128];
   snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%ju,group_id=%ju,default_permissions,allow_other", fuse_fd, (uintmax_t) getuid(), (uintmax_t) getgid());
   if (mount(filepath, mountpoint, "fuse.kim", 0, options) == -1) { // TODO: reduce filepath
-    if (log_level >= LOG_NORMAL) warn("mount");
+    if (log_level >= LOG_NORMAL)
+      warn("mount");
     exit(EXIT_FAILURE);
   }
 
   if (daemonize) { // TODO: log to a temp file
     pid_t pid = fork();
     if (pid < (pid_t) 0) {
-      if (log_level >= LOG_NORMAL) warn("fork");
+      if (log_level >= LOG_NORMAL)
+        warn("fork");
       exit(EXIT_FAILURE);
     }
-    if (pid > (pid_t) 0) {
+    if (pid > (pid_t) 0)
       exit(EXIT_SUCCESS);
-    }
 
     if (setsid() == (pid_t) -1) {
-      if (log_level >= LOG_NORMAL) warn("setsid");
+      if (log_level >= LOG_NORMAL)
+        warn("setsid");
       exit(EXIT_FAILURE);
     }
 
     pid = fork();
     if (pid < (pid_t) 0) {
-      if (log_level >= LOG_NORMAL) warn("fork");
+      if (log_level >= LOG_NORMAL)
+        warn("fork");
       exit(EXIT_FAILURE);
     }
     if (pid > (pid_t) 0) {
-      if (log_level >= LOG_VERBOSE) printf("%s: Daemonized successfully. Daemon PID: %jd\n", executable_name, (intmax_t) pid);
+      if (log_level >= LOG_VERBOSE)
+        printf("%s: Daemonized successfully. Daemon PID: %jd\n", executable_name, (intmax_t) pid);
       exit(EXIT_SUCCESS);
     }
 
     if (chdir(FILEPATH_ROOT) == -1) {
-      if (log_level >= LOG_NORMAL) warn("chdir " FILEPATH_ROOT);
+      if (log_level >= LOG_NORMAL)
+        warn("chdir " FILEPATH_ROOT);
       exit(EXIT_FAILURE);
     }
 
     int null_fd = open(FILEPATH_NULL, O_RDWR);
     if (null_fd == -1) {
-      if (log_level >= LOG_NORMAL) warn("open " FILEPATH_NULL);
+      if (log_level >= LOG_NORMAL)
+        warn("open " FILEPATH_NULL);
       exit(EXIT_FAILURE);
     }
     if    (dup2(null_fd, STDIN_FILENO)  == -1
         || dup2(null_fd, STDOUT_FILENO) == -1
         || dup2(null_fd, STDERR_FILENO) == -1) {
-      if (log_level >= LOG_NORMAL) warn("dup2");
+      if (log_level >= LOG_NORMAL)
+        warn("dup2");
       exit(EXIT_FAILURE);
     }
     if (null_fd > 2) {
       if (close(null_fd) == -1) {
-        if (log_level >= LOG_NORMAL) warn("close");
+        if (log_level >= LOG_NORMAL)
+          warn("close");
         exit(EXIT_FAILURE);
       }
     }
@@ -314,19 +340,23 @@ int main(int argc, char** argv) {
   while (running) {
     count = read(fuse_fd, buf, buf_size);
     if (count == -1) {
-      if (log_level >= LOG_NORMAL) warn("read");
+      if (log_level >= LOG_NORMAL)
+        warn("read");
       exit(EXIT_FAILURE);
     }
 
     struct fuse_in_header in_header = *(struct fuse_in_header*) buf;
     void* payload = &buf[sizeof(struct fuse_in_header)];
 
-    if (log_level >= LOG_VERBOSE) printf("%s: Received %s (%u) from the kernel\n", executable_name, fuse_opcode_enum_str[in_header.opcode], in_header.opcode);
+    if (log_level >= LOG_VERBOSE)
+      printf("%s: Received %s (%u) from the kernel\n", executable_name, fuse_opcode_enum_str[in_header.opcode], in_header.opcode);
     if (in_header.opcode == FUSE_INIT) {
       struct fuse_init_in init_in = *(struct fuse_init_in*) payload;
-      if (log_level >= LOG_VERBOSE) printf("%s: Kernel's FUSE protocol version is %u.%u (supported is %u.%u)\n", executable_name, init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
+      if (log_level >= LOG_VERBOSE)
+        printf("%s: Kernel's FUSE protocol version is %u.%u (supported is %u.%u)\n", executable_name, init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
       if (init_in.major < PROTOCOL_VERSION_MAJOR) {
-        if (log_level >= LOG_NORMAL) warnx("Kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
+        if (log_level >= LOG_NORMAL)
+          warnx("Kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
         exit(EXIT_FAILURE);
       } else if (init_in.major > PROTOCOL_VERSION_MAJOR) {
         struct fuse_out_header out_header = (struct fuse_out_header) {
@@ -341,7 +371,8 @@ int main(int argc, char** argv) {
         };
 
         if (writev(fuse_fd, iov, 2) == -1) {
-          if (log_level >= LOG_NORMAL) warn("writev");
+          if (log_level >= LOG_NORMAL)
+            warn("writev");
           exit(EXIT_FAILURE);
         }
       } else {
@@ -369,7 +400,8 @@ int main(int argc, char** argv) {
         };
 
         if (writev(fuse_fd, iov, 2) == -1) {
-          if (log_level >= LOG_NORMAL) warn("writev");
+          if (log_level >= LOG_NORMAL)
+            warn("writev");
           exit(EXIT_FAILURE);
         }
 
@@ -388,7 +420,8 @@ int main(int argc, char** argv) {
       };
 
       if (writev(fuse_fd, iov, 1) == -1) {
-        if (log_level >= LOG_NORMAL) warn("writev");
+        if (log_level >= LOG_NORMAL)
+          warn("writev");
         exit(EXIT_FAILURE);
       }
     }
@@ -406,7 +439,8 @@ int main(int argc, char** argv) {
           };
 
           if (writev(fuse_fd, iov, 1) == -1) {
-            if (log_level >= LOG_NORMAL) warn("writev");
+            if (log_level >= LOG_NORMAL)
+              warn("writev");
             exit(EXIT_FAILURE);
           }
 
@@ -426,7 +460,8 @@ int main(int argc, char** argv) {
           };
 
           if (writev(fuse_fd, iov, 1) == -1) {
-            if (log_level >= LOG_NORMAL) warn("writev");
+            if (log_level >= LOG_NORMAL)
+              warn("writev");
             exit(EXIT_FAILURE);
           }
         }
