@@ -63,7 +63,7 @@ void signal_handler(int sig) {
 }
 
 int kim_fuse_new(char* filepath, unsigned long long blocks, unsigned long block_size) {
-  fd = open(filepath, O_CREAT | O_RDWR);
+  fd = open(filepath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
   if (fd == -1) {
     if (log_level >= LOG_NORMAL)
       warn("open");
@@ -106,7 +106,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
 
   char options[128];
   snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%ju,group_id=%ju,default_permissions,allow_other", fuse_fd, (uintmax_t) getuid(), (uintmax_t) getgid());
-  if (mount(filepath, mountpoint, "fuse.kim", 0, options) == -1) { // TODO: reduce filepath
+  if (mount(filepath, mountpoint, "fuse.kim", 0, options) == -1) {
     if (log_level >= LOG_NORMAL)
       warn("mount");
     errno = EIO;
