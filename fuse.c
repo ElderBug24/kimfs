@@ -20,7 +20,7 @@
 
 #define KIM_VERSION_MAJOR 0u
 #define KIM_VERSION_MINOR 0u
-#define KIM_VERSION_PATCH 2u
+#define KIM_VERSION_PATCH 3u
 
 #define FILEPATH_ROOT "/"
 #define FILEPATH_NULL "/dev/null"
@@ -29,6 +29,10 @@
 
 #define PROTOCOL_VERSION_MAJOR 7u
 #define PROTOCOL_VERSION_MINOR 39u
+
+#if (FUSE_KERNEL_VERSION != PROTOCOL_VERSION_MAJOR)
+#error "<linux/fuse.h> header version mismatch"
+#endif
 
 enum {
   LOG_QUIET   = 0,
