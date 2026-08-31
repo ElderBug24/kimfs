@@ -35,9 +35,13 @@ enum {
   LOG_NORMAL  = 1,
   LOG_VERBOSE = 2
 } log_level = LOG_NORMAL;
+bool unmount = false;
+
 int fd = -1;
 int fuse_fd = -1;
 struct kim_fs_runtime runtime = { .initialized = false };
+char* mountpoint = NULL;
+bool mounted = false;
 char* executable_name;
 long PAGE_SIZE = -1;
 
@@ -56,6 +60,12 @@ void cleanup(void) {
     if (close(fuse_fd) == -1)
       if (log_level >= LOG_NORMAL)
         warn("close");
+
+  if (mounted)
+    if (unmount)
+      if (umount(mountpoint) == -1)
+        if (log_level >= LOG_NORMAL)
+          warn("umount");
 }
 
 void signal_handler(int sig) {
@@ -114,6 +124,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
     errno = EIO;
     return -1;
   }
+  mounted = true;
 
   if (daemonize) { // TODO: log to a temp file
     pid_t pid = fork();
@@ -331,13 +342,14 @@ void usage(int argc, char** argv) {
       "usage: %s [<options>...] <command> [<args>...]\n"
       "       %s [<options>...] <filepath> <mountpoint>\n"
       "options:\n"
-      "  --version | -V                display version\n"
-      "  --help    | -h                display this help\n"
+      "  --version      | -V           display version\n"
+      "  --help         | -h           display this help\n"
       "                                If version or help is displayed,\n"
       "                                the program exits without executing any command.\n"
-      "  --verbose | -v                verbose mode\n"
-      "  --quiet   | -q                quiet mode\n"
+      "  --verbose      | -v           verbose mode\n"
+      "  --quiet        | -q           quiet mode\n"
       "  --[no-]daemon                 daemonize the server\n"
+      "  --[no-]unmount | -u           automatically unmount if possible\n"
       "commands:\n"
       "  new   [<options>...] <filepath> <blocks> <block_size>\n"
       "                                create a new filesystem in <filepath>\n"
@@ -347,7 +359,7 @@ void usage(int argc, char** argv) {
       argv[0], argv[0]);
 }
 
-int main(int argc, char** argv) { // TODO: umount automatically
+int main(int argc, char** argv) {
   executable_name = argv[0];
 
   PAGE_SIZE = sysconf(_SC_PAGESIZE);
@@ -376,7 +388,6 @@ int main(int argc, char** argv) { // TODO: umount automatically
   unsigned long long new_blocks;
   unsigned long new_block_size;
   char* filepath = NULL;
-  char* mountpoint = NULL;
 
   enum command_e {
     COMMAND_NONE,
@@ -418,6 +429,10 @@ int main(int argc, char** argv) { // TODO: umount automatically
         daemonize = true;
       else if (strcmp(argv[i], "--no-daemon") == 0)
         daemonize = false;
+      else if (strcmp(argv[i], "--unmount") == 0 || strcmp(argv[i], "-u") == 0)
+        unmount = true;
+      else if (strcmp(argv[i], "--no-unmount") == 0)
+        unmount = false;
       else if (strcmp(argv[i], "new") == 0) {
         if (expecting == EXPECT_NONE) {
           if (log_level >= LOG_NORMAL)
