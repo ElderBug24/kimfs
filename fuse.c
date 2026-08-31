@@ -2,12 +2,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/fuse.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
 #include <sys/mount.h>
 #include <sys/uio.h>
 #include <unistd.h>
