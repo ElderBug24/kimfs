@@ -20,7 +20,7 @@
 
 #define KIM_VERSION_MAJOR 0u
 #define KIM_VERSION_MINOR 0u
-#define KIM_VERSION_PATCH 1u
+#define KIM_VERSION_PATCH 2u
 
 #define FILEPATH_ROOT "/"
 #define FILEPATH_NULL "/dev/null"
@@ -129,7 +129,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
 
   char options[128];
   snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%ju,group_id=%ju,default_permissions,allow_other", fuse_fd, (uintmax_t) getuid(), (uintmax_t) getgid());
-  if (mount(filepath, mountpoint, "fuse.kim", 0, options) == -1) {
+  if (mount(filepath, mountpoint, "fuse.kim", 0, options) == -1) { // TODO: simplify filepath
     if (log_level >= LOG_NORMAL)
       warn("mount");
     errno = EIO;
@@ -427,7 +427,10 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
       EXPECT_MOUNT_FILEPATH,
       EXPECT_MOUNT_MOUNTPOINT,
     } expecting = EXPECT_MOUNT_FILEPATH;
+    bool expect_only_arg = false;
     for (int i = 1; i < argc; ++i) {
+      if (expect_only_arg) goto label_expect_arg;
+
       if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-V") == 0)
         display_version = true;
       else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
@@ -452,6 +455,7 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
         }
         command = COMMAND_NEW;
         expecting = EXPECT_NEW_FILEPATH;
+        expect_only_arg = true;
       } else if (strcmp(argv[i], "mount") == 0) {
         if (expecting == EXPECT_NONE) {
           if (log_level >= LOG_NORMAL)
@@ -460,7 +464,10 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
         }
         command = COMMAND_MOUNT;
         expecting = EXPECT_MOUNT_FILEPATH;
+        expect_only_arg = true;
       } else {
+label_expect_arg:
+        expect_only_arg = true;
         switch (expecting) {
           case EXPECT_NONE:
             if (log_level >= LOG_NORMAL)
@@ -509,6 +516,7 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
               expecting = EXPECT_NONE;
               command = COMMAND_NONE;
               program_command = COMMAND_NEW;
+              expect_only_arg = false;
               break;
             }
           case EXPECT_MOUNT_FILEPATH:
@@ -520,6 +528,7 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
             expecting = EXPECT_NONE;
             command = COMMAND_NONE;
             program_command = COMMAND_MOUNT;
+            expect_only_arg = false;
             break;
         }
       }
