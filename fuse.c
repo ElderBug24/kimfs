@@ -69,7 +69,18 @@ void cleanup(void) {
 }
 
 void signal_handler(int sig) {
-  (void) sig;
+  if (log_level >=LOG_VERBOSE)
+    switch (sig) {
+      case SIGINT:
+        fprintf(stderr, "\r%s: Interrupted by SIGINT\n", executable_name);
+        break;
+      case SIGTERM:
+        fprintf(stderr, "\r%s: Interrupted by SIGTERM\n", executable_name);
+        break;
+      case SIGHUP:
+        fprintf(stderr, "\r%s: Interrupted by SIGHUP\n", executable_name);
+        break;
+    }
 
   exit(EXIT_FAILURE);
 }
@@ -78,7 +89,7 @@ int kim_fuse_new(char* filepath, unsigned long long blocks, unsigned long block_
   fd = open(filepath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
   if (fd == -1) {
     if (log_level >= LOG_NORMAL)
-      warn("open");
+      warn("open %s", filepath);
     errno = EIO;
     return -1;
   }
@@ -359,7 +370,7 @@ void usage(int argc, char** argv) {
       argv[0], argv[0]);
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) { // TODO: replace warn & warnx
   executable_name = argv[0];
 
   PAGE_SIZE = sysconf(_SC_PAGESIZE);
@@ -467,11 +478,11 @@ int main(int argc, char** argv) {
               unsigned long long blocks = strtoull(argv[i], &end, 0);
               if (errno != 0) {
                 if (log_level >= LOG_NORMAL)
-                  warn("strtoul");
+                  warn("strtoull");
                 exit(EXIT_FAILURE);
               } else if (end == argv[i]) {
                 if (log_level >= LOG_NORMAL)
-                  warnx("Could not parse '%s' as an unsigned integer\n", argv[1]);
+                  warnx("Could not parse '%s' as an unsigned integer", argv[1]);
                 exit(EXIT_FAILURE);
               }
 
@@ -490,7 +501,7 @@ int main(int argc, char** argv) {
                 exit(EXIT_FAILURE);
               } else if (end == argv[i]) {
                 if (log_level >= LOG_NORMAL)
-                  warnx("Could not parse '%s' as an unsigned integer\n", argv[1]);
+                  warnx("Could not parse '%s' as an unsigned integer", argv[1]);
                 exit(EXIT_FAILURE);
               }
 
