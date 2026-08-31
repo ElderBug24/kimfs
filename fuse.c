@@ -373,8 +373,8 @@ int main(int argc, char** argv) { // TODO: umount automatically
   bool display_help = false;
   bool daemonize = true;
 
-  long long new_blocks = -1; // TODO: don't need signed if command parsing requires all arguments already
-  long long new_block_size = -1;
+  unsigned long long new_blocks;
+  unsigned long new_block_size;
   char* filepath = NULL;
   char* mountpoint = NULL;
 
@@ -460,7 +460,7 @@ int main(int argc, char** argv) { // TODO: umount automatically
                 exit(EXIT_FAILURE);
               }
 
-              new_blocks = (long long) blocks;
+              new_blocks = blocks;
               expecting = EXPECT_NEW_BLOCK_SIZE;
               break;
             }
@@ -479,7 +479,7 @@ int main(int argc, char** argv) { // TODO: umount automatically
                 exit(EXIT_FAILURE);
               }
 
-              new_block_size = (long long) blocks;
+              new_block_size = blocks;
               expecting = EXPECT_NONE;
               command = COMMAND_NONE;
               program_command = COMMAND_NEW;
@@ -524,7 +524,7 @@ int main(int argc, char** argv) { // TODO: umount automatically
       }
     case COMMAND_NEW:
       {
-        if (kim_fuse_new(filepath, (long long unsigned) new_blocks, (long unsigned) new_block_size) == -1) {
+        if (kim_fuse_new(filepath, new_blocks, new_block_size) == -1) {
           if (log_level >= LOG_NORMAL)
             warn("kim_fuse_new");
           exit(EXIT_FAILURE);
