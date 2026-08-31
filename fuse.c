@@ -20,7 +20,7 @@
 
 #define KIM_VERSION_MAJOR 0u
 #define KIM_VERSION_MINOR 0u
-#define KIM_VERSION_PATCH 0u
+#define KIM_VERSION_PATCH 1u
 
 #define FILEPATH_ROOT "/"
 #define FILEPATH_NULL "/dev/null"
@@ -257,7 +257,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
           .minor = PROTOCOL_VERSION_MINOR,
           .max_readahead = init_in.max_readahead,
           .flags = 0,
-          .max_background = 1,
+          .max_background = 1, // TODO: go multithreaded
           .congestion_threshold = 1,
           .max_write = MAX_PAGES * (unsigned) PAGE_SIZE,
           .time_gran = 1000000000, // 1s |  TODO: gran is not set for kim fs
@@ -525,7 +525,7 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
       }
     }
 
-    if (command != COMMAND_NONE || expecting != EXPECT_NONE) {
+    if (!(command == COMMAND_MOUNT && expecting == EXPECT_MOUNT_FILEPATH) && (command != COMMAND_NONE || expecting != EXPECT_NONE)) {
       if (log_level >= LOG_NORMAL) {
         warnx("Incomplete command");
         usage(argc, argv);
@@ -544,8 +544,10 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
   switch (program_command) {
     case COMMAND_NONE:
       {
-        if (log_level >= LOG_NORMAL)
+        if (log_level >= LOG_NORMAL) {
           warnx("No command provided");
+          usage(argc, argv);
+        }
         exit(EXIT_FAILURE);
       }
     case COMMAND_NEW:
