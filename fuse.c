@@ -1,6 +1,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/capability.h>
 #include <linux/fuse.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -9,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -345,7 +347,7 @@ void usage(int argc, char** argv) {
       argv[0], argv[0]);
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) { // TODO: umount automatically
   executable_name = argv[0];
 
   PAGE_SIZE = sysconf(_SC_PAGESIZE);
@@ -531,6 +533,25 @@ int main(int argc, char** argv) {
       }
     case COMMAND_MOUNT:
       {
+        struct __user_cap_header_struct header = {
+          .version = _LINUX_CAPABILITY_VERSION_3,
+          .pid = 0
+        };
+
+        struct __user_cap_data_struct data[2];
+
+        if (syscall(SYS_capget, &header, &data) == -1) {
+          if (log_level >= LOG_NORMAL)
+            warn("syscall SYS_capget");
+          exit(EXIT_FAILURE);
+        }
+
+        bool cap_sys_admin = (data[CAP_SYS_ADMIN / 32].effective & (1U << (CAP_SYS_ADMIN % 32))) != 0;
+
+        if (!cap_sys_admin)
+          if (log_level >= LOG_VERBOSE)
+            warnx("CAP_SYS_ADMIN capability may be required to mount this filesystem");
+
         if (kim_fuse_mount(filepath, mountpoint, daemonize) == -1) {
           if (log_level >= LOG_NORMAL)
             warn("kim_fuse_mount");
