@@ -15,12 +15,12 @@
 #include <unistd.h>
 
 #include "common.h"
-#include "fs.h"
+#include "lib/kim.h"
 
 
 #define KIM_VERSION_MAJOR 0u
 #define KIM_VERSION_MINOR 0u
-#define KIM_VERSION_PATCH 3u
+#define KIM_VERSION_PATCH 4u
 
 #define FILEPATH_ROOT "/"
 #define FILEPATH_NULL "/dev/null"
