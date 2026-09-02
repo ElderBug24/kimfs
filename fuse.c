@@ -59,27 +59,6 @@ char* executable_name;
 char* full_filepath = NULL;
 long PAGE_SIZE = -1;
 
-bool file_contains(int fd, char* needle) {
-  unsigned long needle_len = strlen(needle);
-  unsigned long matched = 0;
-  char buf[4096];
-  long count;
-
-  while ((count = read(fd, buf, sizeof(buf))) > 0) {
-    for (long i = 0; i < count; ++i) {
-      if (buf[i] == needle[matched]) {
-        matched += 1;
-
-        if (matched == needle_len)
-          return true;
-      } else
-        matched = (buf[i] == needle[0]);
-    }
-  }
-
-  return false;
-}
-
 void safe_unmount(void) {
   struct statx stx;
   if (statx(AT_FDCWD, mountpoint, 0, STATX_MNT_ID, &stx) == -1) {
@@ -328,7 +307,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
   unsigned long buf_size = (MAX_PAGES + 1) * (unsigned long) PAGE_SIZE;
   char buf[buf_size];
   long count;
-  bool running     = true;
+  bool running = true;
   bool initialized = false;
   while (running) {
     count = read(fuse_fd, buf, buf_size);

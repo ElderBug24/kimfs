@@ -1,3 +1,28 @@
+#include <stdbool.h>
+#include <string.h>
+#include <unistd.h>
+
+
+bool file_contains(int fd, char* needle) {
+  unsigned long needle_len = strlen(needle);
+  unsigned long matched = 0;
+  char buf[4096];
+  long count;
+
+  while ((count = read(fd, buf, sizeof(buf))) > 0) {
+    for (long i = 0; i < count; ++i) {
+      if (buf[i] == needle[matched]) {
+        matched += 1;
+
+        if (matched == needle_len)
+          return true;
+      } else
+        matched = (buf[i] == needle[0]);
+    }
+  }
+
+  return false;
+}
 
 const char* fuse_opcode_enum_str[] = {
   "",
