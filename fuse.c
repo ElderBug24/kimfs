@@ -23,7 +23,7 @@
 
 #define KIM_VERSION_MAJOR 0u
 #define KIM_VERSION_MINOR 1u
-#define KIM_VERSION_PATCH 0u
+#define KIM_VERSION_PATCH 1u
 
 #define FILEPATH_ROOT      "/"
 #define FILEPATH_NULL      "/dev/null"
@@ -101,7 +101,13 @@ void safe_unmount(void) {
 
     char needle[32];
     char buf[32];
-    unsigned count = snprintf(needle, sizeof(needle), "\n%llu", mountpoint_statx.stx_mnt_id);
+    int count = snprintf(needle, sizeof(needle), "\n%llu", mountpoint_statx.stx_mnt_id);
+    if (count < 0) {
+      if (log_level >= LOG_NORMAL)
+        warn("snprintf");
+      return;
+    }
+
     bool contains = false;
     unsigned read_count = read(mountinfo_fd, buf, sizeof(buf));
     if (read_count == -1) {
@@ -113,7 +119,11 @@ void safe_unmount(void) {
       lseek(mountinfo_fd, (off_t) 0, SEEK_SET);
       contains |= file_contains(mountinfo_fd, needle);
     }
-    close(mountinfo_fd);
+    if (close(mountinfo_fd) == -1) {
+      if (log_level >= LOG_NORMAL)
+        warn("close");
+      return;
+    }
 
     if (log_level >= LOG_NORMAL) {
       if (contains)
