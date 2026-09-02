@@ -1,8 +1,10 @@
+#define _GNU_SOURCE
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/capability.h>
 #include <linux/fuse.h>
+#include <linux/stat.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -10,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -19,12 +22,13 @@
 
 
 #define KIM_VERSION_MAJOR 0u
-#define KIM_VERSION_MINOR 0u
-#define KIM_VERSION_PATCH 5u
+#define KIM_VERSION_MINOR 1u
+#define KIM_VERSION_PATCH 0u
 
-#define FILEPATH_ROOT "/"
-#define FILEPATH_NULL "/dev/null"
-#define FILEPATH_FUSE "/dev/fuse"
+#define FILEPATH_ROOT      "/"
+#define FILEPATH_NULL      "/dev/null"
+#define FILEPATH_FUSE      "/dev/fuse"
+#define FILEPATH_MOUNTINFO "/proc/self/mountinfo"
 #define MAX_PAGES 64u
 
 #define PROTOCOL_VERSION_MAJOR 7u
@@ -46,9 +50,79 @@ int fuse_fd = -1;
 struct kim_fs_runtime runtime = { .initialized = false };
 char* mountpoint = NULL;
 bool mounted = false;
+struct statx mountpoint_statx;
 char* executable_name;
 char* full_filepath = NULL;
 long PAGE_SIZE = -1;
+
+bool file_contains(int fd, char* needle) {
+  unsigned long needle_len = strlen(needle);
+  unsigned long matched = 0;
+  char buf[4096];
+  long count;
+
+  while ((count = read(fd, buf, sizeof(buf))) > 0) {
+    for (long i = 0; i < count; ++i) {
+      if (buf[i] == needle[matched]) {
+        matched += 1;
+
+        if (matched == needle_len)
+          return true;
+      } else
+        matched = (buf[i] == needle[0]);
+    }
+  }
+
+  return false;
+}
+
+void safe_unmount(void) {
+  struct statx stx;
+  if (statx(AT_FDCWD, mountpoint, 0, STATX_MNT_ID, &stx) == -1) {
+    if (log_level >= LOG_NORMAL)
+      warn("statx");
+    return;
+  }
+
+  if (mountpoint_statx.stx_mnt_id == stx.stx_mnt_id) {
+    if (umount2(mountpoint, 0) == -1)
+      if (errno != EBUSY || umount2(mountpoint, MNT_DETACH) == -1) {
+        if (log_level >= LOG_NORMAL)
+          warn("umount2");
+        return;
+      }
+  } else {
+    int mountinfo_fd = open(FILEPATH_MOUNTINFO, O_RDONLY);
+    if (mountinfo_fd == -1) {
+      if (log_level >= LOG_NORMAL)
+        warn("open " FILEPATH_MOUNTINFO);
+      return;
+    }
+
+    char needle[32];
+    char buf[32];
+    unsigned count = snprintf(needle, sizeof(needle), "\n%llu", mountpoint_statx.stx_mnt_id);
+    bool contains = false;
+    unsigned read_count = read(mountinfo_fd, buf, sizeof(buf));
+    if (read_count == -1) {
+      if (log_level >= LOG_NORMAL)
+        warn("read");
+      return;
+    } else if (read_count > count - 1) {
+      contains |= memcmp(&needle[1], buf, count - 1) == 0;
+      lseek(mountinfo_fd, (off_t) 0, SEEK_SET);
+      contains |= file_contains(mountinfo_fd, needle);
+    }
+    close(mountinfo_fd);
+
+    if (log_level >= LOG_NORMAL) {
+      if (contains)
+        warnx("Filesystem has been overmounted");
+      else
+        warnx("Filesystem has already been unmounted");
+    }
+  }
+}
 
 void cleanup(void) {
   if (runtime.initialized)
@@ -66,11 +140,8 @@ void cleanup(void) {
       if (log_level >= LOG_NORMAL)
         warn("close");
 
-  if (mounted)
-    if (unmount)
-      if (umount(mountpoint) == -1)
-        if (log_level >= LOG_NORMAL)
-          warn("umount");
+  if (mounted && unmount)
+    safe_unmount();
 
   if (full_filepath != NULL)
     free(full_filepath);
@@ -158,6 +229,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
     return -1;
   }
   mounted = true;
+  statx(AT_FDCWD, mountpoint, 0, STATX_MNT_ID, &mountpoint_statx);
 
   if (daemonize) { // TODO: log to a temp file
     pid_t pid = fork();
@@ -167,8 +239,10 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
       errno = EIO;
       return -1;
     }
-    if (pid > (pid_t) 0)
+    if (pid > (pid_t) 0) {
+      unmount = false;
       exit(EXIT_SUCCESS);
+    }
 
     if (setsid() == (pid_t) -1) {
       if (log_level >= LOG_NORMAL)
@@ -187,6 +261,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
     if (pid > (pid_t) 0) {
       if (log_level >= LOG_VERBOSE)
         printf("%s: Daemonized successfully. Daemon PID: %jd\n", executable_name, (intmax_t) pid);
+      unmount = false;
       exit(EXIT_SUCCESS);
     }
 
@@ -382,11 +457,11 @@ void usage(int argc, char** argv) {
       "  --verbose      | -v           verbose mode\n"
       "  --quiet        | -q           quiet mode\n"
       "  --[no-]daemon                 daemonize the server\n"
-      "  --[no-]unmount | -u           automatically unmount if possible\n"
+      "  --[no-]unmount | -u           automatically unmount at crash\n"
       "commands:\n"
-      "  new   [<options>...] <filepath> <blocks> <block_size>\n"
+      "  new <filepath> <blocks> <block_size>\n"
       "                                create a new filesystem in <filepath>\n"
-      "  mount [<options>...] <filepath> <mountpoint>\n"
+      "  mount <filepath> <mountpoint>\n"
       "                                mount <filepath> to <mountpoint>\n"
       "\n",
       argv[0], argv[0]);
