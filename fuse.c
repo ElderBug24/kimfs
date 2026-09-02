@@ -20,7 +20,7 @@
 
 #define KIM_VERSION_MAJOR 0u
 #define KIM_VERSION_MINOR 0u
-#define KIM_VERSION_PATCH 4u
+#define KIM_VERSION_PATCH 5u
 
 #define FILEPATH_ROOT "/"
 #define FILEPATH_NULL "/dev/null"
@@ -47,6 +47,7 @@ struct kim_fs_runtime runtime = { .initialized = false };
 char* mountpoint = NULL;
 bool mounted = false;
 char* executable_name;
+char* full_filepath = NULL;
 long PAGE_SIZE = -1;
 
 void cleanup(void) {
@@ -70,6 +71,9 @@ void cleanup(void) {
       if (umount(mountpoint) == -1)
         if (log_level >= LOG_NORMAL)
           warn("umount");
+
+  if (full_filepath != NULL)
+    free(full_filepath);
 }
 
 void signal_handler(int sig) {
@@ -133,7 +137,21 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
 
   char options[128];
   snprintf(options, sizeof(options), "fd=%d,rootmode=040777,user_id=%ju,group_id=%ju,default_permissions,allow_other", fuse_fd, (uintmax_t) getuid(), (uintmax_t) getgid());
-  if (mount(filepath, mountpoint, "fuse.kim", 0, options) == -1) { // TODO: simplify filepath
+  if (filepath[0] == '/') {
+    full_filepath = strdup(filepath);
+  } else {
+    char* cwd = getcwd(NULL, 0);
+    unsigned long filepath_len = strlen(filepath);
+    unsigned long cwd_len = strlen(cwd);
+    bool trailing_slash = cwd[cwd_len - 1] == '/';
+    cwd[cwd_len] = '/';
+    unsigned long size = (filepath_len + cwd_len + !trailing_slash + 1) * sizeof(char);
+    full_filepath = malloc(size);
+    memcpy(full_filepath, cwd, (cwd_len + !trailing_slash) * sizeof(char));
+    memcpy(&full_filepath[cwd_len + !trailing_slash], filepath + 1, filepath_len * sizeof(char));
+    free(cwd);
+  }
+  if (mount(full_filepath, mountpoint, "fuse.kim", 0, options) == -1) {
     if (log_level >= LOG_NORMAL)
       warn("mount");
     errno = EIO;
