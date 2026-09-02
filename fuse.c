@@ -22,8 +22,8 @@
 
 
 #define KIM_VERSION_MAJOR 0u
-#define KIM_VERSION_MINOR 1u
-#define KIM_VERSION_PATCH 1u
+#define KIM_VERSION_MINOR 2u
+#define KIM_VERSION_PATCH 0u
 
 #define FILEPATH_ROOT      "/"
 #define FILEPATH_NULL      "/dev/null"
@@ -43,7 +43,11 @@ enum {
   LOG_NORMAL  = 1,
   LOG_VERBOSE = 2
 } log_level = LOG_NORMAL;
-bool unmount = false;
+enum {
+  UNMOUNT_SKIP   = 0,
+  UNMOUNT_NORMAL = 1,
+  UNMOUNT_FORCE  = 2
+} unmount = UNMOUNT_SKIP;
 
 int fd = -1;
 int fuse_fd = -1;
@@ -109,13 +113,13 @@ void safe_unmount(void) {
     }
 
     bool contains = false;
-    unsigned read_count = read(mountinfo_fd, buf, sizeof(buf));
+    long read_count = read(mountinfo_fd, buf, sizeof(buf));
     if (read_count == -1) {
       if (log_level >= LOG_NORMAL)
         warn("read");
       return;
     } else if (read_count > count - 1) {
-      contains |= memcmp(&needle[1], buf, count - 1) == 0;
+      contains |= memcmp(&needle[1], buf, (unsigned long) count - 1) == 0;
       lseek(mountinfo_fd, (off_t) 0, SEEK_SET);
       contains |= file_contains(mountinfo_fd, needle);
     }
@@ -125,12 +129,26 @@ void safe_unmount(void) {
       return;
     }
 
-    if (log_level >= LOG_NORMAL) {
-      if (contains)
+    if (contains) {
+      if (unmount >= UNMOUNT_FORCE)
+        while (true) {
+          struct statx stx;
+          statx(AT_FDCWD, mountpoint, 0, STATX_MNT_ID, &stx);
+
+          if (umount2(mountpoint, 0) == -1)
+            if (errno != EBUSY || umount2(mountpoint, MNT_DETACH) == -1) {
+              if (log_level >= LOG_NORMAL)
+                warn("umount2");
+              return;
+            }
+
+          if (stx.stx_mnt_id == mountpoint_statx.stx_mnt_id)
+            return;
+        }
+      else if (log_level >= LOG_NORMAL)
         warnx("Filesystem has been overmounted");
-      else
-        warnx("Filesystem has already been unmounted");
-    }
+    } else if (log_level >= LOG_NORMAL)
+      warnx("Filesystem has already been unmounted");
   }
 }
 
@@ -150,7 +168,7 @@ void cleanup(void) {
       if (log_level >= LOG_NORMAL)
         warn("close");
 
-  if (mounted && unmount)
+  if (mounted && unmount > UNMOUNT_SKIP)
     safe_unmount();
 
   if (full_filepath != NULL)
@@ -250,7 +268,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
       return -1;
     }
     if (pid > (pid_t) 0) {
-      unmount = false;
+      unmount = UNMOUNT_SKIP;
       exit(EXIT_SUCCESS);
     }
 
@@ -271,7 +289,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
     if (pid > (pid_t) 0) {
       if (log_level >= LOG_VERBOSE)
         printf("%s: Daemonized successfully. Daemon PID: %jd\n", executable_name, (intmax_t) pid);
-      unmount = false;
+      unmount = UNMOUNT_SKIP;
       exit(EXIT_SUCCESS);
     }
 
@@ -460,14 +478,15 @@ void usage(int argc, char** argv) {
       "usage: %s [<options>...] <command> [<args>...]\n"
       "       %s [<options>...] <filepath> <mountpoint>\n"
       "options:\n"
-      "  --version      | -V           display version\n"
-      "  --help         | -h           display this help\n"
+      "  --version       | -V          display version\n"
+      "  --help          | -h          display this help\n"
       "                                If version or help is displayed,\n"
       "                                the program exits without executing any command.\n"
-      "  --verbose      | -v           verbose mode\n"
-      "  --quiet        | -q           quiet mode\n"
+      "  --verbose       | -v          verbose mode\n"
+      "  --quiet         | -q          quiet mode\n"
       "  --[no-]daemon                 daemonize the server\n"
-      "  --[no-]unmount | -u           automatically unmount at crash\n"
+      "  --unmount       | -u          automatically unmount filesystem at crash\n"
+      "  --force-unmount | -U          automatically unmount all stacked filesystems at crash\n"
       "commands:\n"
       "  new <filepath> <blocks> <block_size>\n"
       "                                create a new filesystem in <filepath>\n"
@@ -538,22 +557,22 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
     for (int i = 1; i < argc; ++i) {
       if (expect_only_arg) goto label_expect_arg;
 
-      if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-V") == 0)
+      if (strcmp(argv[i],      "--version")       == 0 || strcmp(argv[i], "-V") == 0)
         display_version = true;
-      else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
+      else if (strcmp(argv[i], "--help")          == 0 || strcmp(argv[i], "-h") == 0)
         display_help = true;
-      else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0)
+      else if (strcmp(argv[i], "--verbose")       == 0 || strcmp(argv[i], "-v") == 0)
         log_level = LOG_VERBOSE;
-      else if (strcmp(argv[i], "--quiet") == 0 || strcmp(argv[i], "-q") == 0)
+      else if (strcmp(argv[i], "--quiet")         == 0 || strcmp(argv[i], "-q") == 0)
         log_level = LOG_QUIET;
-      else if (strcmp(argv[i], "--daemon") == 0)
+      else if (strcmp(argv[i], "--daemon")        == 0)
         daemonize = true;
-      else if (strcmp(argv[i], "--no-daemon") == 0)
+      else if (strcmp(argv[i], "--no-daemon")     == 0)
         daemonize = false;
-      else if (strcmp(argv[i], "--unmount") == 0 || strcmp(argv[i], "-u") == 0)
-        unmount = true;
-      else if (strcmp(argv[i], "--no-unmount") == 0)
-        unmount = false;
+      else if (strcmp(argv[i], "--unmount")       == 0 || strcmp(argv[i], "-u") == 0)
+        unmount = UNMOUNT_NORMAL;
+      else if (strcmp(argv[i], "--force-unmount") == 0 || strcmp(argv[i], "-U") == 0)
+        unmount = UNMOUNT_FORCE;
       else if (strcmp(argv[i], "new") == 0) {
         if (expecting == EXPECT_NONE) {
           if (log_level >= LOG_NORMAL)
