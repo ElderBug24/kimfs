@@ -25,7 +25,7 @@
 
 #define KIM_VERSION_MAJOR 0u
 #define KIM_VERSION_MINOR 3u
-#define KIM_VERSION_PATCH 0u
+#define KIM_VERSION_PATCH 1u
 
 #define FILEPATH_ROOT      "/"
 #define FILEPATH_NULL      "/dev/null"
@@ -83,7 +83,7 @@ int logv(int priority, bool error, const char* format, ...) {
   }
   va_end(args);
 
-  int print_ret;
+  int print_ret = 0;
   if (error)
     switch (program_command) {
       case COMMAND_NONE:
@@ -182,7 +182,8 @@ void safe_unmount(void) {
             return;
         }
       logv(LOG_WARNING, false, "Filesystem has been overmounted");
-    } logv(LOG_ERR, false, "Filesystem has already been unmounted");
+    } else
+      logv(LOG_ERR, false, "Filesystem has already been unmounted");
   }
 }
 
@@ -209,18 +210,17 @@ void cleanup(void) {
 }
 
 void signal_handler(int sig) {
-  if (log_level >=LOG_VERBOSE)
-    switch (sig) {
-      case SIGINT:
-        logv(LOG_ERR, false, "Interrupted by SIGINT");
-        break;
-      case SIGTERM:
-        logv(LOG_ERR, false, "Interrupted by SIGTERM");
-        break;
-      case SIGHUP:
-        logv(LOG_ERR, false, "Interrupted by SIGHUP");
-        break;
-    }
+  switch (sig) {
+    case SIGINT:
+      logv(LOG_ERR, false, "Interrupted by SIGINT");
+      break;
+    case SIGTERM:
+      logv(LOG_ERR, false, "Interrupted by SIGTERM");
+      break;
+    case SIGHUP:
+      logv(LOG_ERR, false, "Interrupted by SIGHUP");
+      break;
+  }
 
   exit(EXIT_FAILURE);
 }
@@ -532,13 +532,12 @@ int main(int argc, char** argv) {
   bool display_help = false;
   bool daemonize = true;
 
-  unsigned long long new_blocks;
-  unsigned long new_block_size;
+  unsigned long long new_blocks = 0;
+  unsigned long new_block_size = 0;
 
   if (argc == 0) {
     errno = EIO;
-    if (log_level >= LOG_NORMAL)
-      warn(NULL);
+    logv(LOG_ERR, true, "argc");
     exit(EXIT_FAILURE);
   } else if (argc == 1) {
     logv(LOG_ERR, false, "No input provided");
@@ -656,10 +655,9 @@ label_expect_arg:
     }
 
     if (!(command == COMMAND_MOUNT && expecting == EXPECT_MOUNT_FILEPATH) && (command != COMMAND_NONE || expecting != EXPECT_NONE)) {
-      if (log_level >= LOG_NORMAL) {
-        logv(LOG_ERR, false, "Incomplete command");
+      logv(LOG_ERR, false, "Incomplete command");
+      if (log_level >= LOG_NORMAL)
         usage(argc, argv);
-      }
       exit(EXIT_FAILURE);
     }
   }
@@ -674,10 +672,9 @@ label_expect_arg:
   switch (program_command) {
     case COMMAND_NONE:
       {
-        if (log_level >= LOG_NORMAL) {
-          logv(LOG_ERR, false, "No command provided");
+        logv(LOG_ERR, false, "No command provided");
+        if (log_level >= LOG_NORMAL)
           usage(argc, argv);
-        }
         exit(EXIT_FAILURE);
       }
     case COMMAND_NEW:
