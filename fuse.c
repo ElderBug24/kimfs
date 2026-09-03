@@ -7,6 +7,7 @@
 #include <linux/stat.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/syslog.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -22,7 +24,7 @@
 
 
 #define KIM_VERSION_MAJOR 0u
-#define KIM_VERSION_MINOR 2u
+#define KIM_VERSION_MINOR 3u
 #define KIM_VERSION_PATCH 0u
 
 #define FILEPATH_ROOT      "/"
@@ -35,7 +37,7 @@
 #define PROTOCOL_VERSION_MINOR 39u
 
 #if (FUSE_KERNEL_VERSION != PROTOCOL_VERSION_MAJOR)
-#error "<linux/fuse.h> header version mismatch"
+#  error "<linux/fuse.h> header version mismatch"
 #endif
 
 enum {
@@ -48,6 +50,11 @@ enum {
   UNMOUNT_NORMAL = 1,
   UNMOUNT_FORCE  = 2
 } unmount = UNMOUNT_SKIP;
+enum command_e {
+  COMMAND_NONE,
+  COMMAND_NEW,
+  COMMAND_MOUNT
+} program_command = COMMAND_NONE;
 
 int fd = -1;
 int fuse_fd = -1;
@@ -56,29 +63,83 @@ char* mountpoint = NULL;
 bool mounted = false;
 struct statx mountpoint_statx;
 char* executable_name;
-char* full_filepath = NULL;
+char* filepath; // TODO: and remove this one from global scope
+char* full_filepath = NULL; // TODO: simplify filepath when it gets assigned so it is always available
 long PAGE_SIZE = -1;
+
+int logv(int priority, bool error, const char* format, ...) {
+  bool is_error = priority_is_error(priority);
+  if (log_level == LOG_QUIET || (log_level == LOG_NORMAL && !is_error))
+    return 0;
+  int out_fd = is_error ? STDERR_FILENO : STDOUT_FILENO;
+
+  va_list args;
+  char* message;
+  va_start(args, format);
+  if (vasprintf(&message, format, args) == -1) {
+    va_end(args);
+    errno = EIO;
+    return -1;
+  }
+  va_end(args);
+
+  int print_ret;
+  if (error)
+    switch (program_command) {
+      case COMMAND_NONE:
+        print_ret = dprintf(out_fd, "\r%s [%s]: %s: %s\n", executable_name, priority_enum_str[priority], message, strerror(errno));
+        syslog(priority, "%s: %s", message, strerror(errno));
+        break;
+      case COMMAND_NEW:
+        print_ret = dprintf(out_fd, "\r%s %s [%s]: %s: %s\n", executable_name, filepath, priority_enum_str[priority], message, strerror(errno));
+        syslog(priority, "%s: %s: %s", filepath, message, strerror(errno));
+        break;
+      case COMMAND_MOUNT:
+        print_ret = dprintf(out_fd, "\r%s %s %s [%s]: %s: %s\n", executable_name, filepath, mountpoint, priority_enum_str[priority], message, strerror(errno));
+        syslog(priority, "%s %s: %s: %s", filepath, mountpoint, message, strerror(errno));
+        break;
+    }
+  else
+    switch (program_command) {
+      case COMMAND_NONE:
+        print_ret = dprintf(out_fd, "\r%s [%s]: %s\n", executable_name, priority_enum_str[priority], message);
+        syslog(priority, "%s", message);
+        break;
+      case COMMAND_NEW:
+        print_ret = dprintf(out_fd, "\r%s %s [%s]: %s\n", executable_name, filepath, priority_enum_str[priority], message);
+        syslog(priority, "%s: %s", filepath, message);
+        break;
+      case COMMAND_MOUNT:
+        print_ret = dprintf(out_fd, "\r%s %s %s [%s]: %s\n", executable_name, filepath, mountpoint, priority_enum_str[priority], message);
+        syslog(priority, "%s %s: %s", filepath, mountpoint, message);
+        break;
+    }
+  free(message);
+  if (print_ret < 0) {
+    errno = EIO;
+    return -1;
+  }
+
+  return 0;
+}
 
 void safe_unmount(void) {
   struct statx stx;
   if (statx(AT_FDCWD, mountpoint, 0, STATX_MNT_ID, &stx) == -1) {
-    if (log_level >= LOG_NORMAL)
-      warn("statx");
+    logv(LOG_ERR, true, "statx");
     return;
   }
 
   if (mountpoint_statx.stx_mnt_id == stx.stx_mnt_id) {
     if (umount2(mountpoint, 0) == -1)
       if (errno != EBUSY || umount2(mountpoint, MNT_DETACH) == -1) {
-        if (log_level >= LOG_NORMAL)
-          warn("umount2");
+        logv(LOG_ERR, true, "umount2");
         return;
       }
   } else {
     int mountinfo_fd = open(FILEPATH_MOUNTINFO, O_RDONLY);
     if (mountinfo_fd == -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("open " FILEPATH_MOUNTINFO);
+      logv(LOG_ERR, true, "open " FILEPATH_MOUNTINFO);
       return;
     }
 
@@ -86,16 +147,14 @@ void safe_unmount(void) {
     char buf[32];
     int count = snprintf(needle, sizeof(needle), "\n%llu", mountpoint_statx.stx_mnt_id);
     if (count < 0) {
-      if (log_level >= LOG_NORMAL)
-        warn("snprintf");
+      logv(LOG_ERR, true, "snprintf");
       return;
     }
 
     bool contains = false;
     long read_count = read(mountinfo_fd, buf, sizeof(buf));
     if (read_count == -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("read");
+      logv(LOG_ERR, true, "read");
       return;
     } else if (read_count > count - 1) {
       contains |= memcmp(&needle[1], buf, (unsigned long) count - 1) == 0;
@@ -103,8 +162,7 @@ void safe_unmount(void) {
       contains |= file_contains(mountinfo_fd, needle);
     }
     if (close(mountinfo_fd) == -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("close");
+      logv(LOG_ERR, true, "close");
       return;
     }
 
@@ -116,39 +174,35 @@ void safe_unmount(void) {
 
           if (umount2(mountpoint, 0) == -1)
             if (errno != EBUSY || umount2(mountpoint, MNT_DETACH) == -1) {
-              if (log_level >= LOG_NORMAL)
-                warn("umount2");
+              logv(LOG_ERR, true, "umount2");
               return;
             }
 
           if (stx.stx_mnt_id == mountpoint_statx.stx_mnt_id)
             return;
         }
-      else if (log_level >= LOG_NORMAL)
-        warnx("Filesystem has been overmounted");
-    } else if (log_level >= LOG_NORMAL)
-      warnx("Filesystem has already been unmounted");
+      logv(LOG_WARNING, false, "Filesystem has been overmounted");
+    } logv(LOG_ERR, false, "Filesystem has already been unmounted");
   }
 }
 
 void cleanup(void) {
   if (runtime.initialized)
     if (kim_fs_flush_all(&runtime) == -1)
-      if (log_level >= LOG_NORMAL)
-        warn("kim_fs_flush_all");
+      logv(LOG_ERR, true, "kim_fs_flush_all");
 
   if (fd != -1)
     if (close(fd) == -1)
-      if (log_level >= LOG_NORMAL)
-        warn("close");
+      logv(LOG_ERR, true, "close");
 
   if (fuse_fd != -1)
     if (close(fuse_fd) == -1)
-      if (log_level >= LOG_NORMAL)
-        warn("close");
+      logv(LOG_ERR, true, "close");
 
   if (mounted && unmount > UNMOUNT_SKIP)
     safe_unmount();
+
+  closelog();
 
   if (full_filepath != NULL)
     free(full_filepath);
@@ -158,13 +212,13 @@ void signal_handler(int sig) {
   if (log_level >=LOG_VERBOSE)
     switch (sig) {
       case SIGINT:
-        fprintf(stderr, "\r%s: Interrupted by SIGINT\n", executable_name);
+        logv(LOG_ERR, false, "Interrupted by SIGINT");
         break;
       case SIGTERM:
-        fprintf(stderr, "\r%s: Interrupted by SIGTERM\n", executable_name);
+        logv(LOG_ERR, false, "Interrupted by SIGTERM");
         break;
       case SIGHUP:
-        fprintf(stderr, "\r%s: Interrupted by SIGHUP\n", executable_name);
+        logv(LOG_ERR, false, "Interrupted by SIGHUP");
         break;
     }
 
@@ -174,15 +228,13 @@ void signal_handler(int sig) {
 int kim_fuse_new(char* filepath, unsigned long long blocks, unsigned long block_size) {
   fd = open(filepath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
   if (fd == -1) {
-    if (log_level >= LOG_NORMAL)
-      warn("open %s", filepath);
+    logv(LOG_ERR, true, "open %s", filepath);
     errno = EIO;
     return -1;
   }
 
   if (kim_new_fs(fd, (uint64_t) blocks, (uint32_t) block_size) == -1) {
-    if (log_level >= LOG_NORMAL)
-      warn("kim_new_fs");
+    logv(LOG_ERR, true, "kim_new_fs");
     errno = EIO;
     return -1;
   }
@@ -193,22 +245,19 @@ int kim_fuse_new(char* filepath, unsigned long long blocks, unsigned long block_
 int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
   fd = open(filepath, O_RDWR);
   if (fd == -1) {
-    if (log_level >= LOG_NORMAL)
-      warn("open %s", filepath);
+    logv(LOG_ERR, true, "open %s", filepath);
     errno = EIO;
     return -1;
   }
   if (kim_open_fs(&runtime, fd) == -1) {
-    if (log_level >= LOG_NORMAL)
-      warn("kim_open_fs");
+    logv(LOG_ERR, true, "kim_open_fs");
     errno = EIO;
     return -1;
   }
 
   fuse_fd = open(FILEPATH_FUSE, O_RDWR);
   if (fuse_fd == -1) {
-    if (log_level >= LOG_NORMAL)
-      warn("open " FILEPATH_FUSE);
+    logv(LOG_ERR, true, "open " FILEPATH_FUSE);
     errno = EIO;
     return -1;
   }
@@ -226,23 +275,21 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
     unsigned long size = (filepath_len + cwd_len + !trailing_slash + 1) * sizeof(char);
     full_filepath = malloc(size);
     memcpy(full_filepath, cwd, (cwd_len + !trailing_slash) * sizeof(char));
-    memcpy(&full_filepath[cwd_len + !trailing_slash], filepath + 1, filepath_len * sizeof(char));
+    memcpy(&full_filepath[cwd_len + !trailing_slash], &filepath[1], filepath_len * sizeof(char));
     free(cwd);
   }
   if (mount(full_filepath, mountpoint, "fuse.kim", 0, options) == -1) {
-    if (log_level >= LOG_NORMAL)
-      warn("mount");
+    logv(LOG_ERR, true, "mount");
     errno = EIO;
     return -1;
   }
   mounted = true;
   statx(AT_FDCWD, mountpoint, 0, STATX_MNT_ID, &mountpoint_statx);
 
-  if (daemonize) { // TODO: log to a temp file
+  if (daemonize) {
     pid_t pid = fork();
     if (pid < (pid_t) 0) {
-      if (log_level >= LOG_NORMAL)
-        warn("fork");
+      logv(LOG_ERR, true, "fork");
       errno = EIO;
       return -1;
     }
@@ -252,52 +299,45 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
     }
 
     if (setsid() == (pid_t) -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("setsid");
+      logv(LOG_ERR, true, "setsid");
       errno = EIO;
       return -1;
     }
 
     pid = fork();
     if (pid < (pid_t) 0) {
-      if (log_level >= LOG_NORMAL)
-        warn("fork");
+      logv(LOG_ERR, true, "fork");
       errno = EIO;
       return -1;
     }
     if (pid > (pid_t) 0) {
-      if (log_level >= LOG_VERBOSE)
-        printf("%s: Daemonized successfully. Daemon PID: %jd\n", executable_name, (intmax_t) pid);
+      logv(LOG_INFO, false, "Daemonized successfully. Daemon PID: %jd", (intmax_t) pid);
       unmount = UNMOUNT_SKIP;
       exit(EXIT_SUCCESS);
     }
 
     if (chdir(FILEPATH_ROOT) == -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("chdir " FILEPATH_ROOT);
+      logv(LOG_ERR, true, "chdir");
       errno = EIO;
       return -1;
     }
 
     int null_fd = open(FILEPATH_NULL, O_RDWR);
     if (null_fd == -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("open " FILEPATH_NULL);
+      logv(LOG_ERR, true, "open");
       errno = EIO;
       return -1;
     }
     if    (dup2(null_fd, STDIN_FILENO)  == -1
         || dup2(null_fd, STDOUT_FILENO) == -1
         || dup2(null_fd, STDERR_FILENO) == -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("dup2");
+      logv(LOG_ERR, true, "dup2");
       errno = EIO;
       return -1;
     }
     if (null_fd > 2) {
       if (close(null_fd) == -1) {
-        if (log_level >= LOG_NORMAL)
-          warn("close");
+        logv(LOG_ERR, true, "close");
         errno = EIO;
         return -1;
       }
@@ -312,8 +352,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
   while (running) {
     count = read(fuse_fd, buf, buf_size);
     if (count == -1) {
-      if (log_level >= LOG_NORMAL)
-        warn("read");
+      logv(LOG_ERR, true, "read");
       errno = EIO;
       return -1;
     }
@@ -321,15 +360,12 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
     struct fuse_in_header in_header = *(struct fuse_in_header*) buf;
     void* payload = &buf[sizeof(struct fuse_in_header)];
 
-    if (log_level >= LOG_VERBOSE)
-      printf("%s: Received %s (%u) from the kernel\n", executable_name, fuse_opcode_enum_str[in_header.opcode], in_header.opcode);
+    logv(LOG_INFO, false, "Received %s (%u) from the kernel", fuse_opcode_enum_str[in_header.opcode], in_header.opcode);
     if (in_header.opcode == FUSE_INIT) {
       struct fuse_init_in init_in = *(struct fuse_init_in*) payload;
-      if (log_level >= LOG_VERBOSE)
-        printf("%s: Kernel's FUSE protocol version is %u.%u (supported is %u.%u)\n", executable_name, init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
+      logv(LOG_INFO, false, "Kernel's FUSE protocol version is %u.%u (supported is %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
       if (init_in.major < PROTOCOL_VERSION_MAJOR) {
-        if (log_level >= LOG_NORMAL)
-          warnx("Kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
+        logv(LOG_ERR, false, "Kernel's FUSE protocol version is too old (%u.%u < %u.%u)", init_in.major, init_in.minor, PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
         errno = EPROTONOSUPPORT;
         return -1;
       } else if (init_in.major > PROTOCOL_VERSION_MAJOR) {
@@ -345,8 +381,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
         };
 
         if (writev(fuse_fd, iov, 2) == -1) {
-          if (log_level >= LOG_NORMAL)
-            warn("writev");
+          logv(LOG_ERR, true, "writev");
           errno = EIO;
           return -1;
         }
@@ -375,8 +410,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
         };
 
         if (writev(fuse_fd, iov, 2) == -1) {
-          if (log_level >= LOG_NORMAL)
-            warn("writev");
+          logv(LOG_ERR, true, "writev");
           errno = EIO;
           return -1;
         }
@@ -396,8 +430,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
       };
 
       if (writev(fuse_fd, iov, 1) == -1) {
-        if (log_level >= LOG_NORMAL)
-          warn("writev");
+        logv(LOG_ERR, true, "writev");
         errno = EIO;
         return -1;
       }
@@ -416,8 +449,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
           };
 
           if (writev(fuse_fd, iov, 1) == -1) {
-            if (log_level >= LOG_NORMAL)
-              warn("writev");
+            logv(LOG_ERR, true, "writev");
             errno = EIO;
             return -1;
           }
@@ -438,8 +470,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
           };
 
           if (writev(fuse_fd, iov, 1) == -1) {
-            if (log_level >= LOG_NORMAL)
-              warn("writev");
+            logv(LOG_ERR, true, "writev");
             errno = EIO;
             return -1;
           }
@@ -475,13 +506,19 @@ void usage(int argc, char** argv) {
       argv[0], argv[0]);
 }
 
-int main(int argc, char** argv) { // TODO: replace warn & warnx
+int main(int argc, char** argv) {
   executable_name = argv[0];
+  executable_name = strrchr(argv[0], '/');
+  if (executable_name == NULL)
+    executable_name = argv[0];
+  else
+    executable_name += 1;
+
+  openlog(executable_name, LOG_PID, LOG_DAEMON);
 
   PAGE_SIZE = sysconf(_SC_PAGESIZE);
   if (PAGE_SIZE == -1) {
-    if (log_level >= LOG_NORMAL)
-      warn("sysconf _SC_PAGESIZE");
+    logv(LOG_ERR, true, "sysconf _SC_PAGESIZE");
     exit(EXIT_FAILURE);
   }
 
@@ -490,12 +527,6 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
   signal(SIGTERM, signal_handler);
   signal(SIGHUP,  signal_handler);
 
-  executable_name = strrchr(argv[0], '/');
-  if (executable_name == NULL)
-    executable_name = argv[0];
-  else
-    executable_name += 1;
-
   log_level = LOG_NORMAL;
   bool display_version = false;
   bool display_help = false;
@@ -503,13 +534,6 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
 
   unsigned long long new_blocks;
   unsigned long new_block_size;
-  char* filepath = NULL;
-
-  enum command_e {
-    COMMAND_NONE,
-    COMMAND_NEW,
-    COMMAND_MOUNT
-  } program_command = COMMAND_NONE;
 
   if (argc == 0) {
     errno = EIO;
@@ -517,10 +541,9 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
       warn(NULL);
     exit(EXIT_FAILURE);
   } else if (argc == 1) {
-    if (log_level >= LOG_NORMAL) {
-      warnx("No input provided");
+    logv(LOG_ERR, false, "No input provided");
+    if (log_level >= LOG_NORMAL)
       usage(argc, argv);
-    }
     exit(EXIT_FAILURE);
   } else {
     enum command_e command = COMMAND_MOUNT;
@@ -554,8 +577,7 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
         unmount = UNMOUNT_FORCE;
       else if (strcmp(argv[i], "new") == 0) {
         if (expecting == EXPECT_NONE) {
-          if (log_level >= LOG_NORMAL)
-            warnx("Only one command may be executed");
+          logv(LOG_ERR, false, "Only one command may be executed");
           exit(EXIT_FAILURE);
         }
         command = COMMAND_NEW;
@@ -563,8 +585,7 @@ int main(int argc, char** argv) { // TODO: replace warn & warnx
         expect_only_arg = true;
       } else if (strcmp(argv[i], "mount") == 0) {
         if (expecting == EXPECT_NONE) {
-          if (log_level >= LOG_NORMAL)
-            warnx("Only one command may be executed");
+          logv(LOG_ERR, false, "Only one command may be executed");
           exit(EXIT_FAILURE);
         }
         command = COMMAND_MOUNT;
@@ -575,8 +596,7 @@ label_expect_arg:
         expect_only_arg = true;
         switch (expecting) {
           case EXPECT_NONE:
-            if (log_level >= LOG_NORMAL)
-              warnx("Unknown argument '%s'", argv[i]);
+            logv(LOG_ERR, false, "Unknown argument '%s'", argv[i]);
             exit(EXIT_FAILURE);
             break;
           case EXPECT_NEW_FILEPATH:
@@ -589,12 +609,10 @@ label_expect_arg:
               char* end = NULL;
               unsigned long long blocks = strtoull(argv[i], &end, 0);
               if (errno != 0) {
-                if (log_level >= LOG_NORMAL)
-                  warn("strtoull");
+                logv(LOG_ERR, true, "strtoull");
                 exit(EXIT_FAILURE);
               } else if (end == argv[i]) {
-                if (log_level >= LOG_NORMAL)
-                  warnx("Could not parse '%s' as an unsigned integer", argv[1]);
+                logv(LOG_ERR, false, "Could not parse '%s' as an unsigned integer", argv[i]);
                 exit(EXIT_FAILURE);
               }
 
@@ -608,12 +626,10 @@ label_expect_arg:
               char* end = NULL;
               unsigned long blocks = strtoul(argv[i], &end, 0);
               if (errno != 0) {
-                if (log_level >= LOG_NORMAL)
-                  warn("strtoul");
+                logv(LOG_ERR, true, "strtoul");
                 exit(EXIT_FAILURE);
               } else if (end == argv[i]) {
-                if (log_level >= LOG_NORMAL)
-                  warnx("Could not parse '%s' as an unsigned integer", argv[1]);
+                logv(LOG_ERR, false, "Could not parse '%s' as an unsigned integer", argv[i]);
                 exit(EXIT_FAILURE);
               }
 
@@ -641,7 +657,7 @@ label_expect_arg:
 
     if (!(command == COMMAND_MOUNT && expecting == EXPECT_MOUNT_FILEPATH) && (command != COMMAND_NONE || expecting != EXPECT_NONE)) {
       if (log_level >= LOG_NORMAL) {
-        warnx("Incomplete command");
+        logv(LOG_ERR, false, "Incomplete command");
         usage(argc, argv);
       }
       exit(EXIT_FAILURE);
@@ -659,7 +675,7 @@ label_expect_arg:
     case COMMAND_NONE:
       {
         if (log_level >= LOG_NORMAL) {
-          warnx("No command provided");
+          logv(LOG_ERR, false, "No command provided");
           usage(argc, argv);
         }
         exit(EXIT_FAILURE);
@@ -667,8 +683,7 @@ label_expect_arg:
     case COMMAND_NEW:
       {
         if (kim_fuse_new(filepath, new_blocks, new_block_size) == -1) {
-          if (log_level >= LOG_NORMAL)
-            warn("kim_fuse_new");
+          logv(LOG_ERR, true, "kim_fuse_new");
           exit(EXIT_FAILURE);
         }
         break;
@@ -683,20 +698,17 @@ label_expect_arg:
         struct __user_cap_data_struct data[2];
 
         if (syscall(SYS_capget, &header, &data) == -1) {
-          if (log_level >= LOG_NORMAL)
-            warn("syscall SYS_capget");
+          logv(LOG_ERR, true, "syscall SYS_capget");
           exit(EXIT_FAILURE);
         }
 
         bool cap_sys_admin = (data[CAP_SYS_ADMIN / 32].effective & (1U << (CAP_SYS_ADMIN % 32))) != 0;
 
         if (!cap_sys_admin)
-          if (log_level >= LOG_VERBOSE)
-            warnx("CAP_SYS_ADMIN capability may be required to mount this filesystem");
+          logv(LOG_WARNING, false, "CAP_SYS_ADMIN capability may be required to mount this filesystem");
 
         if (kim_fuse_mount(filepath, mountpoint, daemonize) == -1) {
-          if (log_level >= LOG_NORMAL)
-            warn("kim_fuse_mount");
+          logv(LOG_ERR, true, "kim_fuse_mount");
           exit(EXIT_FAILURE);
         }
         break;

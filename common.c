@@ -1,5 +1,6 @@
 #include <stdbool.h>
 #include <string.h>
+#include <sys/syslog.h>
 #include <unistd.h>
 
 
@@ -22,6 +23,14 @@ bool file_contains(int fd, char* needle) {
   }
 
   return false;
+}
+
+bool priority_is_error(int priority) {
+  return (priority == LOG_EMERG
+       || priority == LOG_ALERT
+       || priority == LOG_CRIT
+       || priority == LOG_ERR
+       || priority == LOG_WARNING);
 }
 
 const char* fuse_opcode_enum_str[] = {
@@ -77,5 +86,16 @@ const char* fuse_opcode_enum_str[] = {
   "FUSE_SYNCFS",
   "FUSE_TMPFILE",
   "FUSE_STATX"
+};
+
+const char* priority_enum_str[] = {
+  "EMERG",
+  "ALERT",
+  "CRIT",
+  "ERR",
+  "WARNING",
+  "NOTICE",
+  "INFO",
+  "DEBUG",
 };
 
