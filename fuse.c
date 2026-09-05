@@ -58,7 +58,7 @@ enum command_e {
 
 int fd = -1;
 int fuse_fd = -1;
-struct kim_fs_runtime runtime = { .initialized = false };
+struct kim_fs_runtime* runtime = NULL;
 char* mountpoint = NULL;
 bool mounted = false;
 struct statx mountpoint_statx;
@@ -188,9 +188,11 @@ void safe_unmount(void) {
 }
 
 void cleanup(void) {
-  if (runtime.initialized)
-    if (kim_fs_flush_all(&runtime) == -1)
+  if (runtime != NULL) {
+    if (kim_fs_flush_all(runtime) == -1)
       logv(LOG_ERR, true, "kim_fs_flush_all");
+    free(runtime);
+  }
 
   if (fd != -1)
     if (close(fd) == -1)
@@ -233,7 +235,7 @@ int kim_fuse_new(char* filepath, unsigned long long blocks, unsigned long block_
     return -1;
   }
 
-  if (kim_new_fs(fd, (uint64_t) blocks, (uint32_t) block_size) == -1) {
+  if (kim_new_fs(fd, (uint32_t) blocks, (uint32_t) block_size) == -1) {
     logv(LOG_ERR, true, "kim_new_fs");
     errno = EIO;
     return -1;
@@ -249,7 +251,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
     errno = EIO;
     return -1;
   }
-  if (kim_open_fs(&runtime, fd) == -1) {
+  if (kim_open_fs(fd, &runtime) == -1) {
     logv(LOG_ERR, true, "kim_open_fs");
     errno = EIO;
     return -1;
