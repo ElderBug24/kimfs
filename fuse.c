@@ -25,7 +25,7 @@
 
 #define KIM_VERSION_MAJOR 0u
 #define KIM_VERSION_MINOR 3u
-#define KIM_VERSION_PATCH 1u
+#define KIM_VERSION_PATCH 2u
 
 #define FILEPATH_ROOT      "/"
 #define FILEPATH_NULL      "/dev/null"
@@ -490,14 +490,14 @@ void usage(int argc, char** argv) {
       "usage: %s [<options>...] <command> [<args>...]\n"
       "       %s [<options>...] <filepath> <mountpoint>\n"
       "options:\n"
-      "  --version       | -V          display version\n"
-      "  --help          | -h          display this help\n"
+      "  --version | -V                display version\n"
+      "  --help | -h                   display this help\n"
       "                                If version or help is displayed,\n"
       "                                the program exits without executing any command.\n"
-      "  --verbose       | -v          verbose mode\n"
-      "  --quiet         | -q          quiet mode\n"
+      "  --verbose | -v                verbose mode\n"
+      "  --quiet | -q                  quiet mode\n"
       "  --[no-]daemon                 daemonize the server\n"
-      "  --unmount       | -u          automatically unmount filesystem at crash\n"
+      "  --unmount | -u                automatically unmount filesystem at crash\n"
       "  --force-unmount | -U          automatically unmount all stacked filesystems at crash\n"
       "commands:\n"
       "  new <filepath> <blocks> <block_size>\n"
