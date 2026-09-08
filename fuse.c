@@ -25,7 +25,7 @@
 
 #define KIM_VERSION_MAJOR 0u
 #define KIM_VERSION_MINOR 3u
-#define KIM_VERSION_PATCH 2u
+#define KIM_VERSION_PATCH 3u
 
 #define FILEPATH_ROOT      "/"
 #define FILEPATH_NULL      "/dev/null"
@@ -235,7 +235,7 @@ int kim_fuse_new(char* filepath, unsigned long long blocks, unsigned long block_
     return -1;
   }
 
-  if (kim_new_fs(fd, (uint32_t) blocks, (uint32_t) block_size) == -1) {
+  if (kim_new_fs(fd, (uint32_t) blocks, (uint32_t) block_size, getuid(), getgid(), S_IRWXU | S_IRWXG | S_IRWXO) == -1) {
     logv(LOG_ERR, true, "kim_new_fs");
     errno = EIO;
     return -1;
@@ -401,7 +401,7 @@ int kim_fuse_mount(char* filepath, char* mountpoint, bool daemonize) {
           .max_background = 1, // TODO: go multithreaded
           .congestion_threshold = 1,
           .max_write = MAX_PAGES * (unsigned) PAGE_SIZE,
-          .time_gran = 1000000000, // 1s |  TODO: gran is not set for kim fs
+          .time_gran = 1,
           .max_pages = MAX_PAGES,
           .map_alignment = 0,
           .flags2 = 0,
@@ -681,7 +681,7 @@ label_expect_arg:
       }
     case COMMAND_NEW:
       {
-        if (kim_fuse_new(filepath, new_blocks, new_block_size) == -1) {
+        if (kim_fuse_new(filepath, (uint64_t) new_blocks, (uint32_t) new_block_size) == -1) {
           logv(LOG_ERR, true, "kim_fuse_new");
           exit(EXIT_FAILURE);
         }
@@ -701,7 +701,7 @@ label_expect_arg:
           exit(EXIT_FAILURE);
         }
 
-        bool cap_sys_admin = (data[CAP_SYS_ADMIN / 32].effective & (1U << (CAP_SYS_ADMIN % 32))) != 0;
+        bool cap_sys_admin = (data[CAP_SYS_ADMIN / 32].effective & (1u << (CAP_SYS_ADMIN % 32))) != 0;
 
         if (!cap_sys_admin)
           logv(LOG_WARNING, false, "CAP_SYS_ADMIN capability may be required to mount this filesystem");
