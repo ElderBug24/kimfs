@@ -191,7 +191,8 @@ void cleanup(void) {
   if (runtime != NULL) {
     if (kim_fs_flush_all(runtime) == -1)
       logv(LOG_ERR, true, "kim_fs_flush_all");
-    free(runtime);
+    if (kim_free_fs_runtime(runtime) == -1)
+      logv(LOG_ERR, true, "kim_free_fs_runtime");
   }
 
   if (fd != -1)
